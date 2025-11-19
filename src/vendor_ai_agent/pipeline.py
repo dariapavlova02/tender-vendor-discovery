@@ -1,6 +1,7 @@
 """High-level orchestration for the Tender Vendor AI Agent."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -17,11 +18,12 @@ from .contracts import (
 )
 from .ingestion import TenderIngestionRouter
 from .ingestion.models import TenderIngestionRequest
-from .models import PipelineArtifacts, TenderProfile, VendorMatchResult
+from .models import PipelineArtifacts, TenderProfile, TenderSection, VendorMatchResult
 from .modules import (
     CapabilityMatcher,
     DocumentFetcher,
     DocumentParser,
+    MetadataBackfill,
     OutputGenerator,
     RequirementExtractor,
     VendorDiscovery,
@@ -42,6 +44,7 @@ class PipelineContext:
     capability_matcher: CapabilityMatcherContract
     output_generator: OutputGeneratorContract
     ingestion_router: TenderIngestionRouter
+    metadata_backfill: MetadataBackfill
 
 
 class TenderVendorPipeline:
@@ -60,6 +63,7 @@ class TenderVendorPipeline:
             capability_matcher=CapabilityMatcher(),
             output_generator=OutputGenerator(),
             ingestion_router=TenderIngestionRouter.from_config(cfg),
+            metadata_backfill=MetadataBackfill(),
         )
 
     def run(
@@ -67,29 +71,26 @@ class TenderVendorPipeline:
         tender_files: Iterable[Path],
         *,
         ingestion_request: Optional[TenderIngestionRequest] = None,
+        disable_auto_ingestion: bool = False,
     ) -> PipelineArtifacts:
-        base_profile: Optional[TenderProfile] = None
-        if ingestion_request is not None:
-            ingestion_result = self.context.ingestion_router.ingest(ingestion_request)
-            tender_id = (
-                ingestion_request.reference_number
-                or ingestion_request.solicitation_number
-            )
-            base_profile = TenderProfile(
-                tender_id=tender_id,
-                country=ingestion_request.country,
-                source_system=ingestion_request.source_system,
-                api_metadata=ingestion_result.api_metadata,
-            )
-
         file_list = [Path(path) for path in tender_files]
-        if ingestion_request is not None and base_profile:
-            fetched = self.context.document_fetcher.fetch(ingestion_result.attachments)
-            file_list.extend(fetched)
         sections = self.context.document_parser.parse(file_list)
-        tender_profile = self.context.requirement_extractor.extract(
-            sections, base_profile=base_profile
+        tender_profile = self.context.requirement_extractor.extract(sections)
+
+        should_auto_ingest = (
+            self.context.config.enable_auto_ingestion
+            and not disable_auto_ingestion
+            and ingestion_request is None
         )
+        request_to_use = ingestion_request
+        if should_auto_ingest:
+            request_to_use = self._build_auto_ingestion_request(tender_profile)
+        
+        auto_generated = ingestion_request is None and request_to_use is not None
+        if request_to_use:
+            tender_profile, sections = self._hydrate_from_ingestion(
+                request_to_use, file_list, auto_generated=auto_generated
+            )
         discovered_vendors = self.context.vendor_discovery.discover(tender_profile)
         enriched_vendors = self.context.vendor_enricher.enrich(discovered_vendors)
         filtered_vendors = self.context.vendor_filter.filter(tender_profile, enriched_vendors)
@@ -101,6 +102,49 @@ class TenderVendorPipeline:
             enriched_vendors=enriched_vendors,
             final_matches=matches,
         )
+
+    def _hydrate_from_ingestion(
+        self,
+        request: TenderIngestionRequest,
+        initial_files: List[Path],
+        *,
+        auto_generated: bool = False,
+    ) -> tuple[TenderProfile, List[TenderSection]]:
+        try:
+            ingestion_result = self.context.ingestion_router.ingest(request)
+        except Exception as exc:
+            if not auto_generated:
+                raise
+            logging.warning("Auto ingestion failed, using local files only: %s", exc)
+            sections = self.context.document_parser.parse(initial_files)
+            profile = self.context.requirement_extractor.extract(sections)
+            return profile, sections
+
+        tender_id = request.reference_number or request.solicitation_number
+        base_profile = TenderProfile(
+            tender_id=tender_id,
+            country=request.country,
+            source_system=request.source_system,
+            api_metadata=ingestion_result.api_metadata,
+        )
+        attachments = self.context.document_fetcher.fetch(ingestion_result.attachments)
+        files_with_attachments = initial_files + attachments
+        sections = self.context.document_parser.parse(files_with_attachments)
+        profile = self.context.requirement_extractor.extract(sections, base_profile=base_profile)
+        profile = self.context.metadata_backfill.backfill(profile)
+        return profile, sections
+
+    def _build_auto_ingestion_request(
+        self, profile: TenderProfile
+    ) -> Optional[TenderIngestionRequest]:
+        reference = profile.doc_extracted.structured.reference_number
+        if reference:
+            return TenderIngestionRequest(
+                country="CAN",
+                source_system="CANADABUYS",
+                reference_number=reference,
+            )
+        return None
 
     def save_outputs(
         self,

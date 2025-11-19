@@ -3,6 +3,7 @@
 from .router import TenderIngestionRequest, TenderIngestionRouter
 from .sam import SamClient, UsSamIngestor
 from .canada import CanadaCkanClient, CanadaBuysIngestor
+from .canada_csv import CanadaBuysCSVIngestor
 
 __all__ = [
     "TenderIngestionRequest",
@@ -11,4 +12,5 @@ __all__ = [
     "UsSamIngestor",
     "CanadaCkanClient",
     "CanadaBuysIngestor",
+    "CanadaBuysCSVIngestor",
 ]

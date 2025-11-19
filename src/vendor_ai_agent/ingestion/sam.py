@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import ssl
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from urllib import parse, request as urllib_request
+
+import certifi
 
 from ..config import SamApiConfig
 from ..models import (
@@ -28,10 +31,13 @@ class SamClient:
 
     base_url: str
 
+    def __post_init__(self):
+        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
+
     def search(self, api_key: str, params: Dict[str, Any]) -> Dict[str, Any]:
         query = parse.urlencode({"api_key": api_key, **params})
         url = f"{self.base_url}?{query}"
-        with urllib_request.urlopen(url, timeout=30) as response:  # noqa: S310
+        with urllib_request.urlopen(url, timeout=30, context=self._ssl_context) as response:  # noqa: S310
             payload = response.read()
         return json.loads(payload)
 

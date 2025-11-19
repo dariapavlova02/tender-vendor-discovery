@@ -124,6 +124,8 @@ class DocSections:
     evaluation_criteria: str = ""
     location_details: str = ""
     timeline_details: str = ""
+    tables: List[TenderSection] = field(default_factory=list)
+    table_summaries: str = ""
 
 
 @dataclass
@@ -159,10 +161,87 @@ class PackagingLogistics:
 
 
 @dataclass
+class ContactInfo:
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    organization: Optional[str] = None
+
+
+@dataclass
+class MandatoryRequirements:
+    form_of_offer: bool = False
+    jurisdiction_attestation: bool = False
+    manufacturer_letter: bool = False
+    saami_compliance: bool = False
+    mds_required: bool = False
+    specs_upload: bool = False
+    max_bids_per_item: Optional[int] = None
+    other_requirements: List[str] = field(default_factory=list)
+
+
+@dataclass
+class SampleRequirements:
+    delivery_days: Optional[int] = None
+    lot_numbers: Optional[int] = None
+    max_cost_percent: Optional[int] = None
+    quantities: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class EvaluationStage:
+    stage_number: int
+    name: str
+    description: str
+    pass_fail: bool = False
+
+
+@dataclass
+class EvaluationCriteria:
+    stages: List[EvaluationStage] = field(default_factory=list)
+    category_a_weights: Dict[str, float] = field(default_factory=dict)
+    category_b_weights: Dict[str, float] = field(default_factory=dict)
+    sample_requirements: SampleRequirements = field(default_factory=SampleRequirements)
+
+
+@dataclass
+class ContractTerms:
+    start_date: Optional[str] = None
+    term_years: Optional[int] = None
+    extension_years: Optional[int] = None
+    bid_irrevocable_days: Optional[int] = None
+    insurance_required: bool = False
+    security_clearance_required: bool = False
+    wsia_required: bool = False
+    tax_compliance_required: bool = False
+
+
+@dataclass
+class Clarification:
+    question: str
+    answer: str
+    addendum_number: Optional[int] = None
+    question_number: Optional[str] = None
+
+
+@dataclass
+class Amendment:
+    amendment_number: int
+    addendum_number: int
+    section_changed: str
+    change_type: str
+    description: str
+
+
+@dataclass
 class StructuredDocData:
     project_type: Optional[str] = None
     sector: Optional[str] = None
     location: Address = field(default_factory=Address)
+    solicitation_number: Optional[str] = None
+    reference_number: Optional[str] = None
+    external_ids: Dict[str, str] = field(default_factory=dict)
+    contact_info: ContactInfo = field(default_factory=ContactInfo)
     volumes: List[VolumeItem] = field(default_factory=list)
     technical_keywords: List[str] = field(default_factory=list)
     required_experience: RequiredExperience = field(default_factory=RequiredExperience)
@@ -170,6 +249,11 @@ class StructuredDocData:
     required_certifications: List[str] = field(default_factory=list)
     vendor_constraints: VendorConstraints = field(default_factory=VendorConstraints)
     packaging_logistics: PackagingLogistics = field(default_factory=PackagingLogistics)
+    mandatory_requirements: MandatoryRequirements = field(default_factory=MandatoryRequirements)
+    evaluation_criteria: EvaluationCriteria = field(default_factory=EvaluationCriteria)
+    contract_terms: ContractTerms = field(default_factory=ContractTerms)
+    clarifications: List[Clarification] = field(default_factory=list)
+    amendments: List[Amendment] = field(default_factory=list)
 
 
 @dataclass

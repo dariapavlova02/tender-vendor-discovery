@@ -30,7 +30,7 @@ class RequirementExtractor(RequirementExtractorContract):
 
         combined_scope = "\n\n".join(section.content for section in sections)
         doc_sections = SectionExtractor().extract(sections)
-        structured = FieldExtractor().extract(doc_sections)
+        structured = FieldExtractor().extract(doc_sections, sections)
         doc_extracted = DocExtracted(sections=doc_sections, structured=structured)
         vendor_profile = VendorCapabilityProfile(summary="Placeholder vendor profile")
         profile = base_profile or TenderProfile(

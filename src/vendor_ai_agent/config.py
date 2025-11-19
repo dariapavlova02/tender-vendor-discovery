@@ -66,6 +66,7 @@ class RuntimeConfig:
     openai_api_key: Optional[str] = None
     apollo_api_key: Optional[str] = None
     hunter_api_key: Optional[str] = None
+    enable_auto_ingestion: bool = True
     llm: LLMConfig = field(default_factory=LLMConfig)
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
     enrichment: EnrichmentConfig = field(default_factory=EnrichmentConfig)

@@ -6,6 +6,8 @@ import urllib.request
 from pathlib import Path
 from typing import Iterable, List
 
+import certifi
+
 from ..config import paths
 from ..models import AttachmentMetadata
 
@@ -16,8 +18,7 @@ class DocumentFetcher:
     def __init__(self, download_dir: Path | None = None) -> None:
         self.download_dir = download_dir or (paths.data_dir / "attachments")
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        # TODO: replace unverified SSL context once corporate root cert is installed.
-        self._ssl_context = ssl._create_unverified_context()
+        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
 
     def fetch(self, attachments: Iterable[AttachmentMetadata]) -> List[Path]:
         saved: List[Path] = []

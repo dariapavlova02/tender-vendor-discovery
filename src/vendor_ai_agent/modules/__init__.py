@@ -8,6 +8,7 @@ from .enrichment import VendorEnricher
 from .filtering import VendorFilter
 from .capability_matching import CapabilityMatcher
 from .output_generator import OutputGenerator
+from .metadata_backfill import MetadataBackfill
 
 __all__ = [
     "DocumentParser",
@@ -18,4 +19,5 @@ __all__ = [
     "VendorFilter",
     "CapabilityMatcher",
     "OutputGenerator",
+    "MetadataBackfill",
 ]

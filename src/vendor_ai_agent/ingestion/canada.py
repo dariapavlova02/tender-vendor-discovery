@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import ssl
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from urllib import parse, request as urllib_request
+
+import certifi
 
 from ..config import CanadaOpenDataConfig
 from ..models import (
@@ -24,9 +27,12 @@ from .models import CanadaIngestionRequest, TenderIngestionResult
 class CanadaCkanClient:
     base_url: str
 
+    def __post_init__(self):
+        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
+
     def package_show(self, dataset_id: str) -> Dict[str, Any]:
         url = f"{self.base_url.rstrip('/')}/package_show?{parse.urlencode({'id': dataset_id})}"
-        with urllib_request.urlopen(url, timeout=30) as response:  # noqa: S310
+        with urllib_request.urlopen(url, timeout=30, context=self._ssl_context) as response:  # noqa: S310
             return json.loads(response.read())
 
     def datastore_search(
@@ -45,7 +51,7 @@ class CanadaCkanClient:
         if filters:
             params["filters"] = json.dumps(filters)
         url = f"{self.base_url.rstrip('/')}/datastore_search?{parse.urlencode(params)}"
-        with urllib_request.urlopen(url, timeout=30) as response:  # noqa: S310
+        with urllib_request.urlopen(url, timeout=30, context=self._ssl_context) as response:  # noqa: S310
             return json.loads(response.read())
 
 

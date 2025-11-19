@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..config import RuntimeConfig
-from .canada import CanadaBuysIngestor, CanadaCkanClient
+from .canada_csv import CanadaBuysCSVIngestor
 from .models import (
     CanadaIngestionRequest,
     DateRange,
@@ -19,14 +19,13 @@ from .sam import SamClient, UsSamIngestor
 @dataclass
 class TenderIngestionRouter:
     sam_ingestor: UsSamIngestor
-    canada_ingestor: CanadaBuysIngestor
+    canada_ingestor: CanadaBuysCSVIngestor
 
     @classmethod
     def from_config(cls, config: RuntimeConfig) -> "TenderIngestionRouter":
         sam_client = SamClient(config.sam_api.base_url)
         sam_ingestor = UsSamIngestor(sam_client, config.sam_api)
-        canada_client = CanadaCkanClient(config.canada_open_data.base_url)
-        canada_ingestor = CanadaBuysIngestor(canada_client, config.canada_open_data)
+        canada_ingestor = CanadaBuysCSVIngestor()
         return cls(sam_ingestor=sam_ingestor, canada_ingestor=canada_ingestor)
 
     def ingest(self, request: TenderIngestionRequest) -> TenderIngestionResult:
