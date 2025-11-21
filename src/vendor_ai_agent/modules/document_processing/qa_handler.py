@@ -26,14 +26,18 @@ class QAHandler:
         
         lines = [l.strip() for l in content.split('\n') if '|' in l and '---' not in l]
         
-        if len(lines) < 2:
+        if len(lines) < 1:
             return []
         
         headers = self._parse_row(lines[0])
         
+        first_row_has_qa = any(re.search(r'\b[QAR]\d+\b', cell, re.IGNORECASE) for cell in headers)
+        
         qa_pairs = []
         
-        for row in lines[1:]:
+        start_index = 0 if first_row_has_qa else 1
+        
+        for row in lines[start_index:]:
             cells = self._parse_row(row)
             
             if not cells:
@@ -60,7 +64,23 @@ class QAHandler:
         first_cell = cells[0]
         
         q_match = re.match(r'^Q(\d+)', first_cell, re.IGNORECASE)
-        a_match = re.match(r'^A(\d+)', first_cell, re.IGNORECASE)
+        
+        if q_match and len(cells) >= 4:
+            for i, cell in enumerate(cells[2:], start=2):
+                r_match = re.match(r'^[AR](\d+)', cell, re.IGNORECASE)
+                if r_match and r_match.group(1) == q_match.group(1):
+                    q_id = f"Q{q_match.group(1)}"
+                    question_text = cells[1].strip()
+                    answer_text = ' '.join(cells[i+1:]).strip()
+                    
+                    return QAPair(
+                        question_id=q_id,
+                        question=question_text,
+                        answer=answer_text,
+                        source_file=source
+                    )
+        
+        a_match = re.match(r'^[AR](\d+)', first_cell, re.IGNORECASE)
         
         if q_match:
             q_id = f"Q{q_match.group(1)}"

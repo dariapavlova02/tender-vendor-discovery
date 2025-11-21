@@ -1,6 +1,8 @@
 """Rule-based extraction of structured fields from sections."""
 from __future__ import annotations
 
+import json
+import logging
 import re
 from typing import Dict, Iterable, List, Optional
 
@@ -46,9 +48,11 @@ LEAD_TIME_PATTERN = re.compile(r"(\d{1,3})\s+(?:days|business days)", re.IGNOREC
 class FieldExtractor:
     """Populate StructuredDocData from DocSections text."""
     
-    def __init__(self):
+    def __init__(self, dynamic_keywords: Optional[List[str]] = None, llm_provider=None):
         self.classifier = TableClassifier()
         self.qa_handler = QAHandler()
+        self.dynamic_keywords = dynamic_keywords or []
+        self.llm_provider = llm_provider
 
     def extract(self, sections: DocSections, sections_list: Optional[List[TenderSection]] = None) -> StructuredDocData:
         structured = StructuredDocData()
@@ -59,7 +63,7 @@ class FieldExtractor:
             sections.mandatory_requirements or None
         )
         structured.location = self._infer_location(sections.location_details)
-        structured.volumes = self._extract_volumes(sections.scope_of_work)
+        structured.volumes = self._extract_volumes(sections.scope_of_work, sections_list)
         
         if sections.tables:
             classified_tables = self._classify_and_sort_tables(sections.tables)
@@ -68,12 +72,27 @@ class FieldExtractor:
             table_keywords = self._collect_keywords_from_tables(classified_tables, structured.sector)
             structured.technical_keywords.extend(table_keywords)
         
-        structured.required_experience = self._extract_experience(sections.vendor_qualifications)
-        structured.required_licenses = self._find_keywords(sections.mandatory_requirements, LICENSE_PATTERNS)
-        structured.required_certifications = self._find_keywords(
-            sections.mandatory_requirements, CERTIFICATION_PATTERNS
-        )
-        structured.vendor_constraints = self._extract_constraints(sections.mandatory_requirements)
+        llm_requirements = self._extract_requirements_with_llm(sections)
+        
+        if llm_requirements:
+            structured.required_experience = RequiredExperience(
+                min_years=llm_requirements.get("min_years"),
+                required_project_types=llm_requirements.get("required_project_types", [])
+            )
+            structured.required_licenses = llm_requirements.get("licenses", [])
+            structured.required_certifications = llm_requirements.get("certifications", [])
+            structured.vendor_constraints = VendorConstraints(
+                allowed_jurisdictions=llm_requirements.get("allowed_jurisdictions", []),
+                business_size=llm_requirements.get("business_size"),
+                special_status=llm_requirements.get("special_status", [])
+            )
+        else:
+            structured.required_experience = self._extract_experience(sections.vendor_qualifications)
+            structured.required_licenses = self._find_keywords(sections.mandatory_requirements, LICENSE_PATTERNS)
+            structured.required_certifications = self._find_keywords(
+                sections.mandatory_requirements, CERTIFICATION_PATTERNS
+            )
+            structured.vendor_constraints = self._extract_constraints(sections.mandatory_requirements)
         structured.packaging_logistics = self._extract_packaging(sections.technical_requirements)
         text_keywords = self._collect_keywords(sections.scope_of_work, sections.technical_requirements, structured.sector)
         structured.technical_keywords.extend(text_keywords)
@@ -133,7 +152,7 @@ class FieldExtractor:
             return Address(city=city_match.group(1).strip(), state_province=city_match.group(2).strip())
         return Address()
 
-    def _extract_volumes(self, text: str) -> List[VolumeItem]:
+    def _extract_volumes(self, text: str, sections_list: Optional[List[TenderSection]] = None) -> List[VolumeItem]:
         volumes: List[VolumeItem] = []
         if not text:
             return volumes
@@ -146,7 +165,79 @@ class FieldExtractor:
                 except ValueError:
                     continue
                 volumes.append(VolumeItem(item="Quantity", quantity=quantity, unit=unit))
+        
+        if not volumes and sections_list:
+            for section in sections_list:
+                search_text = f"{section.title} {section.content}"
+                for regex in VOLUME_REGEXES:
+                    for match in regex.finditer(search_text):
+                        amount = match.group(1)
+                        unit = match.group(2)
+                        try:
+                            quantity = float(amount.replace(",", ""))
+                        except ValueError:
+                            continue
+                        volumes.append(VolumeItem(item="Quantity", quantity=quantity, unit=unit))
+                if volumes:
+                    break
+        
         return volumes
+    
+    def _extract_requirements_with_llm(self, sections: DocSections) -> dict:
+        """Extract vendor requirements using LLM with token limits."""
+        if not self.llm_provider:
+            return {}
+        
+        try:
+            combined_text = "\n\n".join(filter(None, [
+                sections.mandatory_requirements,
+                sections.vendor_qualifications,
+                sections.technical_requirements
+            ]))[:3200]
+            
+            prompt = f"""Extract vendor requirements from this tender text:
+
+{combined_text}
+
+Extract:
+- min_years: minimum years of experience (integer or null)
+- required_project_types: list of project types/experience areas
+- licenses: required licenses (list of strings)
+- certifications: required certifications (list of strings)
+- allowed_jurisdictions: geographic restrictions (list like ["Canada"])
+- business_size: "SMALL_ONLY" if small business preference, else null
+- special_status: special vendor statuses (list)
+
+Return JSON:
+{{
+  "min_years": 5,
+  "required_project_types": ["law enforcement ammunition supply"],
+  "licenses": ["ATF license"],
+  "certifications": ["ISO 9001"],
+  "allowed_jurisdictions": ["Canada"],
+  "business_size": null,
+  "special_status": []
+}}"""
+
+            response = self.llm_provider.generate(prompt)
+            if not response or not response.strip():
+                return {}
+            
+            response = response.strip()
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+            response = response.strip()
+            
+            data = json.loads(response)
+            return data if isinstance(data, dict) else {}
+            
+        except Exception as e:
+            logging.warning(f"LLM requirements extraction failed: {e}")
+            return {}
 
     def _extract_experience(self, text: str) -> RequiredExperience:
         if not text:
@@ -204,8 +295,9 @@ class FieldExtractor:
 
     def _collect_keywords(self, scope_text: str, technical_text: str | None, sector: str) -> List[str]:
         keywords: List[str] = []
-        sector_keywords = TECHNICAL_KEYWORDS.get(sector, [])
-        for candidate in sector_keywords:
+        # Use dynamic keywords if available, otherwise fall back to hardcoded sector keywords
+        keyword_list = self.dynamic_keywords if self.dynamic_keywords else TECHNICAL_KEYWORDS.get(sector, [])
+        for candidate in keyword_list:
             if scope_text and candidate in scope_text.lower():
                 keywords.append(candidate)
             elif technical_text and candidate in technical_text.lower():
@@ -458,8 +550,67 @@ class FieldExtractor:
         
         return [(table, table_type) for table, table_type, _ in classified]
     
+    def _extract_items_with_llm(self, table_section: TenderSection) -> List[VolumeItem]:
+        """Extract line items from table using LLM with token limits."""
+        if not self.llm_provider:
+            return []
+        
+        try:
+            table_content = table_section.content[:2400]
+            
+            prompt = f"""Extract line items from this tender table. For each row, extract:
+- item: item description (combine line number, caliber/type, and description)
+- quantity: numeric quantity (just the number)
+- unit: unit of measure
+
+Skip header rows and rows without quantities.
+
+Table:
+{table_content}
+
+Return JSON array:
+[{{"item": "...", "quantity": 1000, "unit": "rounds"}}]"""
+
+            response = self.llm_provider.generate(prompt)
+            if not response or not response.strip():
+                return []
+            
+            response = response.strip()
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+            response = response.strip()
+            
+            data = json.loads(response)
+            if not isinstance(data, list):
+                return []
+            
+            volumes = []
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                item = entry.get("item", "").strip()
+                quantity = entry.get("quantity")
+                unit = entry.get("unit", "").strip() or None
+                
+                if item:
+                    volumes.append(VolumeItem(
+                        item=item[:100],
+                        quantity=quantity,
+                        unit=unit
+                    ))
+            
+            return volumes
+            
+        except Exception as e:
+            logging.warning(f"LLM table extraction failed: {e}")
+            return []
+    
     def _extract_volumes_from_tables(self, classified_tables: List[tuple[TenderSection, str]]) -> List[VolumeItem]:
-        """Best-effort extraction of volumes from Markdown tables."""
+        """Best-effort extraction of volumes from Markdown tables (LLM + regex fallback)."""
         volumes = []
         
         for table, table_type in classified_tables:
@@ -468,6 +619,12 @@ class FieldExtractor:
             
             if table_type != 'line_items':
                 continue
+            
+            llm_volumes = self._extract_items_with_llm(table)
+            if llm_volumes:
+                volumes.extend(llm_volumes)
+                continue
+            
             try:
                 lines = [l.strip() for l in table.content.split('\n') if '|' in l]
                 if len(lines) < 3:
@@ -540,13 +697,14 @@ class FieldExtractor:
     def _collect_keywords_from_tables(self, classified_tables: List[tuple[TenderSection, str]], sector: str) -> List[str]:
         """Extract technical keywords from table content."""
         keywords = []
-        sector_keywords = TECHNICAL_KEYWORDS.get(sector, [])
+        # Use dynamic keywords if available, otherwise fall back to hardcoded sector keywords
+        keyword_list = self.dynamic_keywords if self.dynamic_keywords else TECHNICAL_KEYWORDS.get(sector, [])
         
         for table, table_type in classified_tables:
             if table_type in ('qa', 'pricing', 'unknown'):
                 continue
             content_lower = table.content.lower()
-            for candidate in sector_keywords:
+            for candidate in keyword_list:
                 if candidate in content_lower and candidate not in keywords:
                     keywords.append(candidate)
         
@@ -554,20 +712,40 @@ class FieldExtractor:
     
     def _extract_clarifications_from_tables(self, classified_tables: List[tuple[TenderSection, str]]) -> List[Clarification]:
         """Extract Q&A clarifications from qa-type tables using QAHandler."""
-        clarifications = []
+        all_qa_pairs = []
         
         for table, table_type in classified_tables:
             if table_type != 'qa':
                 continue
             
             qa_pairs = self.qa_handler.extract_qa_pairs(table)
-            
-            for qa_pair in qa_pairs:
-                if qa_pair.question and qa_pair.answer:
-                    clarifications.append(Clarification(
-                        question=qa_pair.question[:500],
-                        answer=qa_pair.answer[:1000],
-                        question_number=qa_pair.question_id
-                    ))
+            all_qa_pairs.extend(qa_pairs)
+        
+        merged_pairs = self._merge_cross_table_qa_pairs(all_qa_pairs)
+        
+        clarifications = []
+        for qa_pair in merged_pairs:
+            if qa_pair.question and qa_pair.answer:
+                clarifications.append(Clarification(
+                    question=qa_pair.question[:500],
+                    answer=qa_pair.answer[:1000],
+                    question_number=qa_pair.question_id
+                ))
         
         return clarifications
+    
+    def _merge_cross_table_qa_pairs(self, all_pairs: List) -> List:
+        """Merge Q&A pairs that span across multiple tables."""
+        pairs_by_id = {}
+        
+        for pair in all_pairs:
+            if pair.question_id not in pairs_by_id:
+                pairs_by_id[pair.question_id] = pair
+            else:
+                existing = pairs_by_id[pair.question_id]
+                if pair.question and not existing.question:
+                    existing.question = pair.question
+                if pair.answer and not existing.answer:
+                    existing.answer = pair.answer
+        
+        return list(pairs_by_id.values())

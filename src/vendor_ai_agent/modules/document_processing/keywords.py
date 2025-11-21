@@ -242,6 +242,15 @@ SECTOR_KEYWORDS = {
         "police vehicle",
         "fire truck",
         "ambulance",
+        "utility vehicle",
+        "utv",
+        "utility terrain vehicle",
+        "side-by-side",
+        "atv",
+        "all-terrain vehicle",
+        "4x4",
+        "off-road vehicle",
+        "recreational vehicle",
     ],
     "food_services": [
         "food services",
@@ -470,6 +479,15 @@ TECHNICAL_KEYWORDS = {
         "abs",
         "airbags",
         "safety rating",
+        "gvwr",
+        "bed capacity",
+        "cargo box",
+        "winch",
+        "roll cage",
+        "trail rated",
+        "off-road capability",
+        "differential lock",
+        "skid plate",
     ],
     "food_services": [
         "haccp",
@@ -702,6 +720,7 @@ VOLUME_REGEXES = [
     re.compile(r"(\d[\d,\.]+)\s*(square\s*feet|sq\.?\s*ft|ft2)", re.IGNORECASE),
     re.compile(r"(\d[\d,\.]+)\s*(rounds|cartridges|pcs|pieces)", re.IGNORECASE),
     re.compile(r"(\d[\d,\.]+)\s*(kg|kilograms?|lbs|pounds?)", re.IGNORECASE),
+    re.compile(r"(\d+)\s+(?:utility\s+)?(vehicles?|utvs?|units?)", re.IGNORECASE),
 ]
 
 TIMELINE_REGEXES = [

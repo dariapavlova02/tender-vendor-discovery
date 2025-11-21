@@ -14,8 +14,15 @@ class StaticDirectorySource(BaseVendorSource):
         super().__init__(name="static_directory")
 
     def search(self, profile: TenderProfile) -> List[VendorRecord]:
-        project_type = profile.doc_extracted.structured.project_type if profile.doc_extracted else None
-        keyword = (project_type or "General Contractor").lower().replace(" ", "-")
+        # Try to use dynamic context search terms first
+        if profile.dynamic_context and profile.dynamic_context.search_terms:
+            # Use the first search term as the keyword
+            keyword = profile.dynamic_context.search_terms[0].lower().replace(" ", "-")
+        else:
+            # Fall back to project type from structured data
+            project_type = profile.doc_extracted.structured.project_type if profile.doc_extracted else None
+            keyword = (project_type or "General Contractor").lower().replace(" ", "-")
+        
         return [
             VendorRecord(
                 company_name=f"{keyword.title()} Vendor {i}",

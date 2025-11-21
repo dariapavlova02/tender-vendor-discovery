@@ -1,36 +1,36 @@
-# Отчет по Milestone 1: MVP Tender Vendor AI Agent
+# Milestone 1 Report: MVP Tender Vendor AI Agent
 
-**Период:** От начала проекта до текущего состояния  
-**Дата отчета:** 20 ноября 2024  
-**Статус:** Завершен ✓
+**Period:** Project inception to current state  
+**Report Date:** November 20, 2024  
+**Status:** Completed 
 
 ---
 
 ## Executive Summary
 
-Первый milestone успешно реализован. Создан полнофункциональный MVP-скелет системы Tender Vendor AI Agent с интеграцией API, парсингом документов и модульной архитектурой. Разработано **~4,150 строк кода** на Python, охватывающих весь пайплайн от загрузки тендерных документов до генерации списка подходящих поставщиков.
+Milestone 1 has been successfully completed. A fully functional MVP skeleton of the Tender Vendor AI Agent system has been created with API integration, document parsing, and modular architecture. **~4,150 lines of Python code** have been developed, covering the entire pipeline from tender document upload to generating a list of suitable vendors.
 
-### Ключевые достижения:
-- ✅ Создана модульная архитектура с четкими контрактами между компонентами
-- ✅ Реализована интеграция с SAM.gov (США) и CanadaBuys (Канада)
-- ✅ Построен парсер документов с поддержкой PDF, Excel, Word, текста
-- ✅ Реализована автоматическая классификация документов и извлечение структурированных данных
-- ✅ Написано 17+ тестов для валидации ключевой функциональности
-- ✅ Создана CLI-утилита для запуска полного пайплайна
+### Key Achievements:
+-  Created modular architecture with clear contracts between components
+-  Implemented integration with SAM.gov (USA) and CanadaBuys (Canada)
+-  Built document parser supporting PDF, Excel, Word, and text formats
+-  Implemented automatic document classification and structured data extraction
+-  Written 17+ tests validating core functionality
+-  Created CLI utility for running the full pipeline
 
 ---
 
-## 1. Архитектура и техническая база
+## 1. Architecture & Technical Foundation
 
-### 1.1 Структура проекта
+### 1.1 Project Structure
 
-Система построена на модульной архитектуре с чётким разделением ответственности:
+The system is built on modular architecture with clear separation of concerns:
 
 ```
 src/vendor_ai_agent/
-├── ingestion/           # API интеграция с SAM.gov & CanadaBuys
-├── modules/             # Основные модули пайплайна
-│   ├── document_processing/  # Классификация, извлечение полей, секций
+├── ingestion/           # API integration with SAM.gov & CanadaBuys
+├── modules/             # Core pipeline modules
+│   ├── document_processing/  # Classification, field/section extraction
 │   ├── document_parser.py
 │   ├── requirement_extractor.py
 │   ├── vendor_discovery.py
@@ -38,80 +38,80 @@ src/vendor_ai_agent/
 │   ├── filtering.py
 │   ├── capability_matching.py
 │   └── output_generator.py
-├── sources/             # Источники данных поставщиков
-├── enrichment_providers/ # Провайдеры обогащения контактами
-├── contracts.py         # Протоколы для всех модулей
-├── models.py           # Унифицированные dataclass'ы
-├── config.py           # Конфигурация (LLM, discovery, enrichment)
-└── pipeline.py         # Оркестрация всего пайплайна
+├── sources/             # Vendor data sources
+├── enrichment_providers/ # Contact enrichment providers
+├── contracts.py         # Protocol definitions for all modules
+├── models.py           # Unified dataclasses
+├── config.py           # Configuration (LLM, discovery, enrichment)
+└── pipeline.py         # Full pipeline orchestration
 ```
 
-**Принципы архитектуры:**
-- Protocol-based design для гибкой замены реализаций
-- Dependency injection через `PipelineContext`
-- Единая схема данных `TenderProfile` для всех модулей
-- Расширяемость через регистрацию источников и провайдеров
+**Architecture Principles:**
+- Protocol-based design for flexible implementation replacement
+- Dependency injection via `PipelineContext`
+- Single unified `TenderProfile` schema across all modules
+- Extensibility through source and provider registration
 
-### 1.2 Технологический стек
+### 1.2 Technology Stack
 
-- **Python 3.10+** - основной язык
-- **Poetry** - управление зависимостями
-- **Pandas & OpenPyXL** - обработка табличных данных
-- **PDFPlumber** - извлечение текста и таблиц из PDF
-- **python-docx** - парсинг Word документов
-- **pytest** - тестирование
+- **Python 3.10+** - primary language
+- **Poetry** - dependency management
+- **Pandas & OpenPyXL** - tabular data processing
+- **PDFPlumber** - PDF text and table extraction
+- **python-docx** - Word document parsing
+- **pytest** - testing framework
 
 ---
 
-## 2. Реализованная функциональность
+## 2. Implemented Functionality
 
-### 2.1 API Ingestion (Интеграция с внешними системами)
+### 2.1 API Ingestion (External System Integration)
 
-**Статус:** Реализовано 90% (блокируется proxy-сертификатом)
+**Status:** 90% complete (blocked by proxy certificate)
 
 #### SAM.gov (USA)
-- ✅ `SamClient`: обертка над `api.sam.gov/opportunities/v2/search`
-- ✅ `UsSamIngestor`: маппинг полей в унифицированную схему `api_metadata`
-- ✅ Поддержка поиска по `solnum`, `postedFrom`, `postedTo`
-- ✅ Извлечение вложений (`resourceLinks`)
+-  `SamClient`: wrapper over `api.sam.gov/opportunities/v2/search`
+-  `UsSamIngestor`: field mapping to unified `api_metadata` schema
+-  Search support by `solnum`, `postedFrom`, `postedTo`
+-  Attachment extraction (`resourceLinks`)
 
 #### CanadaBuys (Canada)
-- ✅ `CanadaCkanClient`: работа с CKAN API
-- ✅ `CanadaBuysIngestor`: запросы `package_show` и `datastore_search`
-- ✅ Сбор метаданных тендера и истории контрактов
-- ✅ Автоматическое извлечение `reference_number` из документов
+-  `CanadaCkanClient`: CKAN API client
+-  `CanadaBuysIngestor`: `package_show` and `datastore_search` queries
+-  Tender metadata and contract history collection
+-  Automatic `reference_number` extraction from documents
 
-#### Автоматическая интеграция
-- ✅ `TenderIngestionRouter`: маршрутизация запросов США/Канада
-- ✅ **Auto-ingestion**: система автоматически определяет номера тендеров (например, "Tender# 20070") из загруженных документов и делает API-запрос без явного указания пользователя
-- ✅ `DocumentFetcher`: загрузка вложений с API в локальную папку
+#### Automatic Integration
+-  `TenderIngestionRouter`: USA/Canada request routing
+-  **Auto-ingestion**: system automatically detects tender numbers (e.g., "Tender# 20070") from uploaded documents and makes API requests without explicit user input
+-  `DocumentFetcher`: downloads API attachments to local folder
 
-**Текущие ограничения:**
-- ⚠️ Требуется настройка корпоративного proxy-сертификата для продакшн-запросов
-- 📋 TODO: CanadaBuys не возвращает вложения через Datastore - нужен парсинг HTML
+**Current Limitations:**
+-  Corporate proxy certificate required for production requests
+-  TODO: CanadaBuys doesn't return attachments via Datastore - HTML parsing needed
 
-### 2.2 Document Processing (Обработка документов)
+### 2.2 Document Processing
 
-**Статус:** Реализовано 85%
+**Status:** 85% complete
 
-#### Парсинг файлов
-- ✅ Поддержка форматов: PDF, Excel (.xlsx), Word (.docx), текст (.txt)
-- ✅ `DocumentParser`: рекурсивный обход папок, обработка всех файлов
-- ✅ Создание объектов `TenderSection` с метаданными источника
+#### File Parsing
+-  Format support: PDF, Excel (.xlsx), Word (.docx), text (.txt)
+-  `DocumentParser`: recursive folder traversal, processes all files
+-  Creates `TenderSection` objects with source metadata
 
-#### Классификация документов
+#### Document Classification
 `DocumentClassifier` (src/vendor_ai_agent/modules/document_processing/classifier.py)
-- ✅ Эвристическая классификация по названию файла:
-  - `CORE_SCOPE`: основные тендерные документы (RFP, RFB, SOW)
-  - `TECH_SPEC`: технические спецификации
-  - `ADDENDUM`: дополнения и исправления
-  - `LEGAL`: юридические документы
-  - `OTHER`: прочее
-- ✅ Приоритизация документов для обработки
+-  Heuristic classification by filename:
+  - `CORE_SCOPE`: main tender documents (RFP, RFB, SOW)
+  - `TECH_SPEC`: technical specifications
+  - `ADDENDUM`: addenda and amendments
+  - `LEGAL`: legal documents
+  - `OTHER`: miscellaneous
+-  Document prioritization for processing
 
-#### Извлечение секций
+#### Section Extraction
 `SectionExtractor` (src/vendor_ai_agent/modules/document_processing/sections.py)
-- ✅ Определение границ секций через regex-паттерны:
+-  Section boundary detection via regex patterns:
   - Scope of Work
   - Technical Requirements
   - Mandatory Requirements
@@ -119,95 +119,95 @@ src/vendor_ai_agent/
   - Evaluation Criteria
   - Location Details
   - Timeline Details
-- ✅ Контекстуальные подсказки (например, "Annex", "Appendix")
-- ✅ Fallback на первый непустой chunk при отсутствии явных заголовков
+-  Contextual hints (e.g., "Annex", "Appendix")
+-  Fallback to first non-empty chunk when explicit headers absent
 
-#### Извлечение структурированных полей
+#### Structured Field Extraction
 `FieldExtractor` (src/vendor_ai_agent/modules/document_processing/field_extractor.py)
-- ✅ **Идентификаторы:** `solicitation_number`, `reference_number`
-- ✅ **Опыт:** парсинг минимальных требований к опыту подрядчика
-- ✅ **Объемы работ:** извлечение величин (площадь, количество, вес) с единицами измерения
-- ✅ **Временные рамки:** сроки поставки образцов и регулярных заказов
-- ✅ **Лицензии и сертификаты:** обязательные требования
-- ✅ **Отраслевые ключевые слова:** распознавание SAAMI, NATO, ISO стандартов для сектора ammunition
+-  **Identifiers:** `solicitation_number`, `reference_number`
+-  **Experience:** parsing minimum contractor experience requirements
+-  **Work volumes:** extraction of quantities (area, count, weight) with units
+-  **Timeframes:** sample and regular order delivery deadlines
+-  **Licenses & certifications:** mandatory requirements
+-  **Industry keywords:** recognition of SAAMI, NATO, ISO standards for ammunition sector
 
-#### Обработка таблиц
+#### Table Processing
 `TableClassifier` (src/vendor_ai_agent/modules/document_processing/table_classifier.py)
-- ✅ Классификация таблиц на `PRODUCT_SPEC`, `PRICING`, `SCHEDULE`, `REQUIREMENTS`, `OTHER`
-- ✅ Извлечение строк/колонок для последующей обработки
+-  Table classification: `PRODUCT_SPEC`, `PRICING`, `SCHEDULE`, `REQUIREMENTS`, `OTHER`
+-  Row/column extraction for downstream processing
 
-#### Специализированные обработчики
-- ✅ `KeywordsExtractor`: сектор-специфичные ключевые слова (амуниция, стройка, IT)
-- ✅ `QAHandler`: обработка Q&A секций из addendum'ов
+#### Specialized Handlers
+-  `KeywordsExtractor`: sector-specific keywords (ammunition, construction, IT)
+-  `QAHandler`: Q&A section processing from addenda
 
-**Покрытие тестами:**
-- `test_document_parser.py` - базовый парсинг
-- `test_sections.py` - извлечение секций
-- `test_extraction.py` - структурированные поля
-- `test_table_classification.py` - классификация таблиц
-- `test_table_content.py`, `test_table_extraction.py` - работа с табличными данными
-- `test_sector_aware_keywords.py` - отраслевые ключевые слова
-- `verify_classification.py` - валидация классификатора
+**Test Coverage:**
+- `test_document_parser.py` - basic parsing
+- `test_sections.py` - section extraction
+- `test_extraction.py` - structured fields
+- `test_table_classification.py` - table classification
+- `test_table_content.py`, `test_table_extraction.py` - table data handling
+- `test_sector_aware_keywords.py` - industry keywords
+- `verify_classification.py` - classifier validation
 
-### 2.3 Requirement Extraction (Извлечение требований)
+### 2.3 Requirement Extraction
 
-**Статус:** Реализовано 60% (placeholder для LLM)
+**Status:** 60% complete (LLM placeholder)
 
-- ✅ `RequirementExtractor`: сборка `TenderProfile` из секций
-- ✅ Объединение `api_metadata` + `doc_extracted` в единую структуру
-- ✅ Создание `vendor_capability_profile` с ключевыми требованиями
-- 📋 TODO: Интеграция GPT/Claude для семантического анализа требований
+-  `RequirementExtractor`: assembles `TenderProfile` from sections
+-  Combines `api_metadata` + `doc_extracted` into unified structure
+-  Creates `vendor_capability_profile` with key requirements
+-  TODO: GPT integration for semantic requirement analysis
 
-### 2.4 Vendor Discovery (Поиск поставщиков)
+### 2.4 Vendor Discovery
 
-**Статус:** Реализован скелет (10%)
+**Status:** Skeleton implemented (10%)
 
-- ✅ `VendorDiscovery`: агрегация источников через протокол `VendorSource`
-- ✅ `BaseVendorSource`: базовый класс для источников
-- ✅ `StaticDirectory`: статический справочник для тестирования
-- 📋 TODO: Интеграция реальных источников (SAM.gov registry, USAspending, ассоциации)
+-  `VendorDiscovery`: source aggregation via `VendorSource` protocol
+-  `BaseVendorSource`: base class for sources
+-  `StaticDirectory`: static directory for testing
+-  TODO: Real source integration (SAM.gov registry, USAspending, associations)
 
-### 2.5 Data Enrichment (Обогащение данных)
+### 2.5 Data Enrichment
 
-**Статус:** Реализован скелет (10%)
+**Status:** Skeleton implemented (10%)
 
-- ✅ `VendorEnricher`: цепочка провайдеров `EnrichmentProvider`
-- ✅ `StaticContactsProvider`: заглушка для тестирования
-- 📋 TODO: Apollo.io, Hunter.io, парсинг сайтов компаний
+-  `VendorEnricher`: chain of `EnrichmentProvider`s
+-  `StaticContactsProvider`: testing stub
+-  TODO: Apollo.io, Hunter.io, company website scraping
 
-### 2.6 Filtering & Scoring (Фильтрация и скоринг)
+### 2.6 Filtering & Scoring
 
-**Статус:** Реализованы заглушки (15%)
+**Status:** Stubs implemented (15%)
 
-- ✅ `VendorFilter`: географические правила, дедупликация
-- ✅ `CapabilityMatcher`: структура для LLM-скоринга
-- ✅ Модель `VendorMatchResult` с обоснованиями и ссылками
-- 📋 TODO: GPT/Claude для семантического матчинга возможностей поставщика и требований
+-  `VendorFilter`: geographic rules, deduplication
+-  `CapabilityMatcher`: structure for LLM scoring
+-  `VendorMatchResult` model with rationales and references
+-  TODO: GPT/Claude for semantic vendor capability vs. requirement matching
 
-### 2.7 Output Generation (Генерация отчетов)
+### 2.7 Output Generation
 
-**Статус:** Реализовано 90%
+**Status:** 90% complete
 
-- ✅ `OutputGenerator`: экспорт в XLSX, CSV, JSON
-- ✅ Настраиваемые форматы через `OutputConfig`
-- ✅ Автоматическое создание `./outputs/`
+-  `OutputGenerator`: export to XLSX, CSV, JSON
+-  Configurable formats via `OutputConfig`
+-  Automatic `./outputs/` directory creation
 
-### 2.8 Pipeline Orchestration (Оркестрация пайплайна)
+### 2.8 Pipeline Orchestration
 
-**Статус:** Реализовано 95%
+**Status:** 95% complete
 
 `TenderVendorPipeline` (src/vendor_ai_agent/pipeline.py:50-167)
 
-Ключевые возможности:
-- ✅ **Двухрежимная работа:**
-  1. **Manual mode**: парсинг только локальных файлов
-  2. **API-assisted mode**: API → загрузка вложений → парсинг всего набора
-- ✅ **Auto-ingestion**: автоматическое создание `TenderIngestionRequest` при обнаружении идентификаторов в документах
-- ✅ **Metadata backfill**: заполнение пропущенных полей `api_metadata` из `doc_extracted` и наоборот
-- ✅ **Graceful degradation**: fallback на локальные файлы при ошибках API
-- ✅ **Dependency injection**: все модули конфигурируются через `PipelineContext`
+Key capabilities:
+-  **Dual-mode operation:**
+  1. **Manual mode**: parse local files only
+  2. **API-assisted mode**: API → fetch attachments → parse combined set
+-  **Auto-ingestion**: automatic `TenderIngestionRequest` creation when identifiers detected in documents
+-  **Metadata backfill**: fills missing `api_metadata` fields from `doc_extracted` and vice versa
+-  **Graceful degradation**: fallback to local files on API errors
+-  **Dependency injection**: all modules configured via `PipelineContext`
 
-Полный flow:
+Full flow:
 ```
 User uploads → Parse docs → Extract identifiers →
 → [Optional] API ingestion → Fetch attachments → Re-parse all →
@@ -217,246 +217,338 @@ User uploads → Parse docs → Extract identifiers →
 
 ### 2.9 CLI & Scripts
 
-**Статус:** Реализовано 100%
+**Status:** 100% complete
 
-- ✅ `tender-vendor-agent`: CLI-команда через Poetry scripts
-- ✅ `scripts/run_full_pipeline.py`: обертка для запуска с флагами:
+-  `tender-vendor-agent`: CLI command via Poetry scripts
+-  `scripts/run_full_pipeline.py`: wrapper for running with flags:
   ```bash
   run_full_pipeline.py path/to/tender/ \
     --source-system CANADABUYS \
     --reference 20070
   ```
-- ✅ Поддержка `PYTHONPATH=src` для изолированных запусков
+-  `PYTHONPATH=src` support for isolated runs
 
 ---
 
-## 3. Тестирование и валидация
+## 3. Testing & Validation
 
-### 3.1 Написанные тесты (17+)
+### 3.1 Written Tests (17+)
 
-| Тест | Покрытие |
+| Test | Coverage |
 |------|----------|
-| `test_ingestion.py` | API-интеграция SAM/CanadaBuys |
-| `test_document_parser.py` | Парсинг PDF/Excel/Docx |
-| `test_sections.py` | Извлечение секций |
-| `test_extraction.py` | Структурированные поля |
-| `test_table_classification.py` | Классификация таблиц |
-| `test_table_content.py` | Извлечение данных из таблиц |
-| `test_table_extraction.py` | Полный цикл обработки таблиц |
-| `test_sector_aware_keywords.py` | Отраслевые ключевые слова |
-| `test_pipeline.py` | End-to-end пайплайн |
-| `test_vendors.py` | Поиск и фильтрация поставщиков |
-| `test_llm_context.py` | Подготовка данных для LLM |
-| `verify_classification.py` | Валидация классификатора |
+| `test_ingestion.py` | SAM/CanadaBuys API integration |
+| `test_document_parser.py` | PDF/Excel/Docx parsing |
+| `test_sections.py` | Section extraction |
+| `test_extraction.py` | Structured fields |
+| `test_table_classification.py` | Table classification |
+| `test_table_content.py` | Table data extraction |
+| `test_table_extraction.py` | Full table processing cycle |
+| `test_sector_aware_keywords.py` | Industry keywords |
+| `test_pipeline.py` | End-to-end pipeline |
+| `test_vendors.py` | Vendor search and filtering |
+| `test_llm_context.py` | LLM data preparation |
+| `verify_classification.py` | Classifier validation |
 
-Дополнительные debug-скрипты:
+Additional debug scripts:
 - `debug_keywords.py`, `debug_extraction_detail.py`, `debug_table_content.py`
-- `analyze_keywords_strategy.py` - анализ стратегий извлечения ключевых слов
-- `test_pdfplumber_poc.py` - POC для PDFPlumber
-- `test_full_dataset.py` - тестирование на реальном датасете
+- `analyze_keywords_strategy.py` - keyword extraction strategy analysis
+- `test_pdfplumber_poc.py` - PDFPlumber POC
+- `test_full_dataset.py` - real dataset testing
 
-### 3.2 Smoke-тестирование
+### 3.2 Smoke Testing
 
-✅ **Реальный датасет:** "Supply and Delivery of Ammunition" (OPP-1984 / Tender #20070)
-- 9 addendum-файлов с amendments и pricing forms
-- Корректное извлечение:
+ **Real Dataset:** "Supply and Delivery of Ammunition" (OPP-1984 / Tender #20070)
+- 9 addendum files with amendments and pricing forms
+- Correct extraction of:
   - `solicitation_number = "OPP-1984"`
   - `reference_number = "20070"`
-  - Scope of Work из addenda
-  - Технические спецификации (калибры, типы амуниции)
-  - Временные рамки поставки
+  - Scope of Work from addenda
+  - Technical specifications (calibers, ammunition types)
+  - Delivery timeframes
 
 ---
 
-## 4. Документация
+## 4. Documentation
 
-### 4.1 Создано
+### 4.1 Created
 
-- ✅ **README.md**: быстрый старт, структура репозитория, примеры запуска
-- ✅ **docs/ARCHITECTURE.md**: mapping модулей на бизнес-требования, контракты, расширяемость
-- ✅ **docs/PIPELINE_WORKFLOW.md**: детальное описание ingestion flow, схема `TenderProfile`, roadmap TODOs
-- ✅ **pyproject.toml**: Poetry-конфигурация с зависимостями и scripts
+-  **README.md**: quick start, repository structure, usage examples
+-  **docs/ARCHITECTURE.md**: module-to-business-requirement mapping, contracts, extensibility
+-  **docs/PIPELINE_WORKFLOW.md**: detailed ingestion flow, `TenderProfile` schema, roadmap TODOs
+-  **pyproject.toml**: Poetry configuration with dependencies and scripts
 
-### 4.2 Качество кода
+### 4.2 Code Quality
 
-- ✅ Type hints для всех публичных интерфейсов
-- ✅ Docstrings для ключевых классов и функций
-- ✅ Protocol-based contracts для расширяемости
-- ✅ Structured logging через `logging` module
+-  Type hints for all public interfaces
+-  Docstrings for key classes and functions
+-  Protocol-based contracts for extensibility
+-  Structured logging via `logging` module
 
 ---
 
-## 5. Известные ограничения и TODOs
+## 5. Known Limitations & TODOs
 
-### 5.1 Критические (блокируют продакшн)
+### 5.1 Critical (Production Blockers)
 
-1. **Сетевая инфраструктура:**
-   - ⚠️ Корпоративный proxy блокирует SSL-запросы к `open.canada.ca` и `api.sam.gov`
-   - **Решение:** Установить proxy-сертификат в Python `certifi` trust store или настроить переменные окружения для proxy
+1. **CanadaBuys Attachments:**
+   -  CKAN Datastore doesn't return attachments for most datasets
+   - **Solution:** Parse HTML tender pages or secondary feed
 
-2. **CanadaBuys вложения:**
-   - ⚠️ CKAN Datastore не возвращает attachments для большинства датасетов
-   - **Решение:** Парсинг HTML-страниц тендеров или secondary feed
+### 5.2 High Priority
 
-### 5.2 Высокий приоритет
+3. **LLM Integration:**
+   -  `RequirementExtractorLLM`: semantic requirement analysis via GPT
+   -  `CapabilityMatcher`: LLM scoring of vendor-requirement fit
 
-3. **LLM интеграция:**
-   - 📋 `RequirementExtractorLLM`: семантический анализ требований через GPT/Claude
-   - 📋 `CapabilityMatcher`: LLM-скоринг соответствия поставщика требованиям
+4. **Vendor Discovery Sources:**
+   -  SAM.gov entity registry
+   -  USAspending.gov
+   -  Association scraping (NAICS-based)
 
-4. **Vendor Discovery источники:**
-   - 📋 SAM.gov entity registry
-   - 📋 USAspending.gov
-   - 📋 Scraping ассоциаций (NAICS-based)
+5. **Data Enrichment Providers:**
+   -  Apollo.io API
+   -  Corporate website scraping
 
-5. **Data Enrichment провайдеры:**
-   - 📋 Apollo.io API
-   - 📋 Hunter.io API
-   - 📋 Scraping корпоративных сайтов
+### 5.3 Medium Priority
 
-### 5.3 Средний приоритет
+6. **Persistence Layer:**
+   -  SQLite cache for vendor data (avoid re-enrichment)
+   -  Save pipeline intermediate states
 
-6. **Persistence layer:**
-   - 📋 SQLite кэш для vendor data (избегать повторного enrichment)
-   - 📋 Сохранение промежуточных состояний пайплайна
-
-7. **Улучшения парсинга:**
-   - 📋 User-override для классификации документов
-   - 📋 Более продвинутые heuristics для Q&A секций в addenda
-   - 📋 OCR для сканированных PDF (через pytesseract)
+7. **Parsing Improvements:**
+   -  User override for document classification
+   -  Advanced heuristics for Q&A sections in addenda
+   -  OCR for scanned PDFs (via pytesseract)
 
 8. **Security & Auth:**
-   - 📋 Secrets management (AWS Secrets Manager / Vault)
-   - 📋 Environment variables для API keys
+   -  Secrets management 
+   -  Environment variables for API keys
 
-### 5.4 Низкий приоритет
+### 5.4 Low Priority
 
-9. **CI/CD:**
-   - 📋 GitHub Actions для автотестов
-   - 📋 Pre-commit hooks для code quality
-
-10. **Monitoring:**
-    - 📋 Структурированное логирование (JSON)
-    - 📋 Метрики производительности модулей
+9. **Monitoring:**
+    -  Structured logging (JSON)
+    -  Module performance metrics
 
 ---
 
-## 6. Метрики проекта
+## 6. Project Metrics
 
-### 6.1 Количественные показатели
+### 6.1 Quantitative Indicators
 
-| Метрика | Значение |
-|---------|----------|
-| Строк кода (Python) | ~4,150 |
-| Количество модулей | 20+ |
-| Протоколов (Contracts) | 7 |
-| Тестов | 17+ |
-| Форматов документов | 4 (PDF, Excel, Word, Text) |
-| API интеграций | 2 (SAM.gov, CanadaBuys) |
-| Выходных форматов | 3 (XLSX, CSV, JSON) |
+| Metric | Value |
+|--------|-------|
+| Lines of Code (Python) | ~4,150 |
+| Number of Modules | 20+ |
+| Protocols (Contracts) | 7 |
+| Tests | 17+ |
+| Document Formats | 4 (PDF, Excel, Word, Text) |
+| API Integrations | 2 (SAM.gov, CanadaBuys) |
+| Output Formats | 3 (XLSX, CSV, JSON) |
 
-### 6.2 Покрытие функциональности
+### 6.2 Functionality Coverage
 
-| Модуль | Готовность | Комментарий |
-|--------|------------|-------------|
-| API Ingestion | 90% | Блокируется proxy |
-| Document Parsing | 85% | Нужны улучшения для OCR |
-| Requirement Extraction | 60% | Ждет LLM интеграции |
-| Vendor Discovery | 10% | Скелет готов |
-| Enrichment | 10% | Скелет готов |
-| Filtering | 15% | Базовые правила |
-| Capability Matching | 15% | Ждет LLM интеграции |
-| Output Generation | 90% | Готов |
-| Pipeline Orchestration | 95% | Готов |
+| Module | Readiness | Comment |
+|--------|-----------|---------|
+| API Ingestion | 90% | Blocked by proxy |
+| Document Parsing | 85% | OCR improvements needed |
+| Requirement Extraction | 60% | Awaiting LLM integration |
+| Vendor Discovery | 10% | Skeleton ready |
+| Enrichment | 10% | Skeleton ready |
+| Filtering | 15% | Basic rules |
+| Capability Matching | 15% | Awaiting LLM integration |
+| Output Generation | 90% | Ready |
+| Pipeline Orchestration | 95% | Ready |
 
-**Средняя готовность:** ~52%
+**Average Readiness:** ~52%
 
 ---
 
-## 7. Что дальше: Milestone 2
+## 7. LLM Strategy & Cost Analysis
 
-### 7.1 Приоритеты следующего этапа
+### 7.1 Model Selection Philosophy
 
-#### P0 (Критические)
-1. **Разрешить proxy-блокировку** для продакшн API-запросов
-2. **Интегрировать LLM (GPT-4/Claude):**
-   - Requirement extraction с промптами для разных отраслей
-   - Capability matching с обоснованиями и цитатами
-3. **Реализовать Vendor Discovery источники:**
-   - SAM.gov entity registry (регистрационные данные компаний)
-   - USAspending.gov (история контрактов)
-   - Базовый web scraper для ассоциаций
+For an **economical yet high-quality MVP**, a "one model for everything" approach (e.g., only GPT-4) will burn through budget instantly. A **cascaded architecture** is required.
 
-#### P1 (Высокие)
-4. **Enrichment провайдеры:**
-   - Apollo.io для контактов руководства
-   - Hunter.io для email'ов
+#### Recommended Multi-Tier Strategy
+
+```python
+@dataclass
+class LLMConfig:
+    cheap_model: str = "gpt-4o-mini"      # For routine tasks
+    smart_model: str = "gpt-4o"           # For "brain" work
+    vision_model: str = "gpt-4o"          # For scans
+```
+
+### 7.2 Task-Specific Model Recommendations
+
+| Pipeline Stage | Task | Recommended Model | Rationale (Cost/Quality) |
+|----------------|------|-------------------|--------------------------|
+| **Document Classifier** | File classification | **Heuristics (Regex)** | Free. Use LLM only as fallback on errors. |
+| **Section Extractor** | Find sections in text | **GPT-4o-mini** | Cheap. Good context understanding ("where's Scope?"). |
+| **Data Extraction** | Extract JSON (dates, amounts) | **GPT-4o-mini** | Excellent at structuring. |
+| **Vendor Matching (Stage 1)** | Filter irrelevant vendors | **GPT-4o-mini** | Fast, cheap. No need for GPT-4 on obvious "no"s. |
+| **Vendor Scoring (Stage 2)** | Final rationale (top 30) | **GPT-4o** / **Claude 3.5 Sonnet** | Need high-quality text and logic for client. |
+| **Vision/OCR** | Scanned PDFs | **GPT-4o** | Best multimodal vision on market. |
+
+### 7.3 Cost Estimate Per Tender
+
+**Assumptions** (based on OPP-1984 dataset):
+- **Tender volume:** ~150 pages (docs + addenda) = ~60k-80k tokens
+- **Vendor funnel:**
+  - Discovery: 1,000 companies (no LLM, database/API search)
+  - Enrichment: 300 companies (from `EnrichmentConfig` limit)
+  - Matching: 300 companies (analyze websites)
+  - Shortlist: 30 best companies (detailed scoring)
+
+#### Stage 1: Tender Analysis (Requirement Extraction)
+- **Model:** GPT-4o-mini
+- **Input:** ~80,000 tokens (all PDF content)
+- **Output:** ~3,000 tokens (structured JSON `TenderProfile`)
+- **Cost:**
+  - Input: 0.08M × $0.15 = $0.012
+  - Output: 0.003M × $0.60 = $0.0018
+  - **Stage Total:** **~$0.02**
+
+#### Stage 2: Mass Screening (Capability Matching)
+- **Model:** GPT-4o-mini (for YES/NO filtering)
+- **Input per vendor:** ~3,000 tokens (website "About Us" + "Services" + compressed requirements)
+- **Output per vendor:** ~200 tokens (JSON with score and flag)
+- **Total (300 vendors):**
+  - Input: 300 × 3k = 900k tokens ($0.135)
+  - Output: 300 × 200 = 60k tokens ($0.036)
+  - **Stage Total:** **~$0.17-$0.25**
+
+#### Stage 3: Final Report (Razor-Sharp Critique)
+- **Model:** GPT-4o (or Claude 3.5 Sonnet)
+- **Input per vendor:** ~4,000 tokens (detailed context)
+- **Output per vendor:** ~600 tokens (detailed rationale)
+- **Total (30 vendors):**
+  - Input: 30 × 4k = 120k tokens (0.12M × $2.50 = $0.30)
+  - Output: 30 × 600 = 18k tokens (0.018M × $10.00 = $0.18)
+  - **Stage Total:** **~$0.50**
+
+#### Stage 4: Contingency (Vision/OCR)
+- If tender has scans (images): ~20 pages
+- 20 pages × $0.01 ≈ **$0.20**
+
+### 7.4 Cost Summary
+
+| Cost Item | Model | Volume | Cost |
+|-----------|-------|--------|------|
+| 1. Requirement parsing | GPT-4o-mini | 1 tender | $0.02 |
+| 2. Screen 300 vendors | GPT-4o-mini | 300 × 3k tokens | $0.20 |
+| 3. Deep analysis Top-30 | **GPT-4o** | 30 × 4k tokens | $0.50 |
+| 4. Vision/OCR (scans) | GPT-4o | 20 pages | $0.20 |
+| **TOTAL** | | | **~$0.92** |
+
+*With +50% buffer for retries, errors, long prompts:* **~$1.50 per tender**
+
+### 7.5 Cost Optimization Strategies
+
+#### Achieve <$0.50 per tender:
+1. **Stricter input filter:** Don't send 300 companies to LLM. Use free keyword pre-filter (Python), leave only 50-100 candidates for LLM.
+2. **Caching:** If company `ABC Roofing` was already checked in a previous tender, save its profile summary to database. Don't waste tokens re-reading its website, reuse saved summary.
+3. **Mini-only approach:** Skip GPT-4o for final report, cost drops 3-4×, but you lose analytical depth.
+
+#### Recommended Configuration
+```python
+@dataclass
+class LLMConfig:
+    cheap_model: str = "gpt-4o-mini"
+    cheap_model_input_cost: float = 0.15  # per 1M tokens
+    cheap_model_output_cost: float = 0.60
+    
+    smart_model: str = "gpt-4o"
+    smart_model_input_cost: float = 2.50
+    smart_model_output_cost: float = 10.00
+    
+    vision_model: str = "gpt-4o"
+    
+    max_vendors_for_enrichment: int = 300
+    max_vendors_for_smart_scoring: int = 30
+```
+
+**Conclusion:** At **$1.50 per tender** budget, you get very high quality. If cheaper needed - reduce vendor funnel size.
+
+---
+
+## 8. What's Next: Milestone 2
+
+### 8.1 Next Stage Priorities
+
+#### P0 (Critical)
+1. **Resolve proxy blockage** for production API requests
+2. **Integrate LLM (GPT-4/Claude):**
+   - Requirement extraction with prompts for different sectors
+   - Capability matching with rationales and citations
+3. **Implement Vendor Discovery sources:**
+   - SAM.gov entity registry (company registration data)
+   - USAspending.gov (contract history)
+   - Basic web scraper for associations
+
+#### P1 (High)
+4. **Enrichment providers:**
+   - Apollo.io for executive contacts
+   - Hunter.io for emails
 5. **Persistence:**
-   - SQLite кэш для vendor data
-   - Сохранение `TenderProfile` для аудита
-6. **Улучшенная фильтрация:**
+   - SQLite cache for vendor data
+   - Save `TenderProfile` for audit
+6. **Enhanced filtering:**
    - Geographic constraints (state/province)
    - Business size requirements (small business set-asides)
 
-#### P2 (Средние)
-7. **UI/UX (опционально):**
-   - Web-интерфейс для загрузки документов
-   - Dashboard для просмотра результатов
+#### P2 (Medium)
+7. **UI/UX (optional):**
+   - Web interface for document upload
+   - Dashboard for result viewing
 8. **Automated testing:**
-   - CI/CD pipeline в GitHub Actions
+   - CI/CD pipeline in GitHub Actions
    - Pre-commit hooks (black, ruff, mypy)
 
-### 7.2 Критерии успеха Milestone 2
+### 8.2 Milestone 2 Success Criteria
 
-- ✅ End-to-end работа пайплайна с реальными API-данными
-- ✅ LLM-генерация vendor shortlist с обоснованиями на уровне human-quality
-- ✅ Enrichment минимум 50 поставщиков с контактными данными
-- ✅ Экспорт в XLSX с цветовым кодированием по score
-- ✅ Время работы < 5 минут для типового тендера (100 страниц, 200 candidates)
-
-### 7.3 Долгосрочное видение (Milestone 3+)
-
-- Multi-tenant SaaS платформа
-- Интеграция с procurement systems (Coupa, SAP Ariba)
-- Machine learning для ranking optimization
-- Realtime monitoring новых тендеров
-- Mobile app для vendor notifications
+-  End-to-end pipeline working with real API data
+-  LLM-generated vendor shortlist with human-quality rationales
+-  Enrichment of minimum 50 vendors with contact data
+-  XLSX export with color-coding by score
+-  Runtime < 5 minutes for typical tender (100 pages, 200 candidates)
 
 ---
 
-## 8. Выводы
+## 9. Conclusions
 
-### 8.1 Достигнутое
+### 9.1 Achievements
 
-Первый milestone успешно заложил фундамент для production-ready системы Tender Vendor AI Agent:
+Milestone 1 successfully laid the foundation for a production-ready Tender Vendor AI Agent system:
 
-1. **Solid architecture**: модульная структура с четкими контрактами позволяет команде работать параллельно над разными модулями
-2. **API-first approach**: интеграция с SAM.gov и CanadaBuys с первого дня упрощает масштабирование на другие источники
-3. **Document intelligence**: продвинутый парсинг с классификацией и извлечением структурированных данных покрывает 80% типовых тендерных документов
-4. **Test coverage**: 17+ тестов обеспечивают confidence для дальнейших изменений
-5. **Extensibility**: protocol-based design позволяет легко добавлять новые источники, провайдеры, форматы
+1. **Solid architecture**: modular structure with clear contracts enables team to work in parallel on different modules
+2. **API-first approach**: SAM.gov and CanadaBuys integration from day one simplifies scaling to other sources
+3. **Document intelligence**: advanced parsing with classification and structured data extraction covers 80% of typical tender documents
+4. **Test coverage**: 17+ tests provide confidence for future changes
+5. **Extensibility**: protocol-based design enables easy addition of new sources, providers, formats
 
-### 8.2 Риски и митигация
+### 9.2 Risks & Mitigation
 
-| Риск | Вероятность | Влияние | Митигация |
-|------|-------------|---------|-----------|
-| Proxy блокирует API | Высокая | Высокое | Приоритет #1: получить сертификат от IT |
-| LLM стоимость превышает бюджет | Средняя | Среднее | Использовать кэширование, batch processing, cheaper models для pre-filtering |
-| Vendor data enrichment rate limiting | Средняя | Среднее | Реализовать SQLite кэш, соблюдать rate limits |
-| Document parsing accuracy < 80% | Низкая | Высокое | Расширить тестовый датасет, добавить OCR |
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| Proxy blocks API | High | High | Priority #1: obtain certificate from IT |
+| LLM cost exceeds budget | Medium | Medium | Use caching, batch processing, cheaper models for pre-filtering |
+| Vendor data enrichment rate limiting | Medium | Medium | Implement SQLite cache, respect rate limits |
+| Document parsing accuracy < 80% | Low | High | Expand test dataset, add OCR |
 
-### 8.3 Рекомендации
+### 9.3 Recommendations
 
-1. **Немедленно:** Решить proxy-блокировку для разблокировки API-тестирования
-2. **Следующая неделя:** Начать интеграцию OpenAI GPT-4 для requirement extraction
-3. **2 недели:** Реализовать SAM.gov entity registry source
-4. **1 месяц:** End-to-end demo с реальными данными для stakeholder review
+1. **Immediately:** Resolve proxy blockage to unblock API testing
+2. **Next week:** Start OpenAI GPT-4 integration for requirement extraction
+3. **2 weeks:** Implement SAM.gov entity registry source
+4. **1 month:** End-to-end demo with real data for stakeholder review
 
 ---
 
-## Приложения
+## Appendices
 
-### A. Пример выходного файла `TenderProfile`
+### A. Sample `TenderProfile` Output
 
 ```json
 {
@@ -492,7 +584,7 @@ User uploads → Parse docs → Extract identifiers →
 }
 ```
 
-### B. Используемые команды
+### B. Usage Commands
 
 ```bash
 cd /Users/dariapavlova/Documents/vendor_ai_agent
@@ -505,7 +597,7 @@ PYTHONPATH=src scripts/run_full_pipeline.py \
 pytest tests/
 ```
 
-### C. Архитектурная диаграмма (текстовая)
+### C. Architecture Diagram (Text)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -551,7 +643,7 @@ pytest tests/
 │                         ▼                                    │
 │  ┌────────────────────────────────────────────┐             │
 │  │     LLM Capability Matching                │             │
-│  │   (GPT-4 / Claude scoring)                 │             │
+│  │   (GPT-4o-mini → GPT-4o cascade)           │             │
 │  └────────────────────┬───────────────────────┘             │
 └────────────────────────┼────────────────────────────────────┘
                          │
@@ -564,6 +656,6 @@ pytest tests/
 
 ---
 
-**Подготовил:** AI Development Team  
-**Версия отчета:** 1.0  
-**Следующий review:** после Milestone 2
+**Prepared by:** Daria Pavlova
+**Report Version:** 1.0  
+**Next Review:** After Milestone 2

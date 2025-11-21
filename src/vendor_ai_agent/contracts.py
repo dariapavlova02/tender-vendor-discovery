@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, Protocol
+from typing import Iterable, List, Optional, Protocol
 
 from .models import TenderProfile, TenderSection, VendorMatchResult, VendorRecord
 
@@ -13,7 +13,7 @@ class DocumentParserContract(Protocol):
 
 
 class RequirementExtractorContract(Protocol):
-    def extract(self, sections: List[TenderSection]) -> TenderProfile:
+    def extract(self, sections: List[TenderSection], base_profile: Optional[TenderProfile] = None) -> TenderProfile:
         ...
 
 

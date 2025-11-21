@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ class TenderSection:
     content: str
     source_path: Optional[Path] = None
     section_type: str = "text"
-    metadata: Dict[str, str] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -295,13 +295,22 @@ class VendorCapabilityProfile:
 
 
 @dataclass
+class DynamicTenderContext:
+    sector: str = "Unknown"
+    industry_description: str = ""
+    technical_keywords: List[str] = field(default_factory=list)
+    search_terms: List[str] = field(default_factory=list)
+
+
+@dataclass
 class TenderProfile:
-    tender_id: Optional[str]
-    country: Optional[str]
-    source_system: Optional[str]
+    tender_id: Optional[str] = None
+    country: Optional[str] = None
+    source_system: Optional[str] = None
     api_metadata: APIMetadata = field(default_factory=APIMetadata)
     doc_extracted: DocExtracted = field(default_factory=DocExtracted)
     vendor_capability_profile: VendorCapabilityProfile = field(default_factory=VendorCapabilityProfile)
+    dynamic_context: DynamicTenderContext = field(default_factory=DynamicTenderContext)
 
 
 # ---------------------------------------------------------------------------

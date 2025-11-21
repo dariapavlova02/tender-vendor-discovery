@@ -53,8 +53,10 @@ class TableClassifier:
         qa_patterns = [
             r'\bq\d+\b',
             r'\ba\d+\b',
+            r'\br\d+\b',
             r'\bquestion\s*\d+\b',
             r'\banswer\s*\d+\b',
+            r'\bresponse\s*\d+\b',
             r'questions\s+and\s+answers',
         ]
         

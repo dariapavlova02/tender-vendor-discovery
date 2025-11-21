@@ -59,6 +59,42 @@ The `vendor_ai_agent.ingestion` package introduces:
   Add `--source-system CANADABUYS --reference <id>` (or `--source-system SAM --solnum ... --posted-from ... --posted-to ...`) to pull API metadata and attachments.
   Even without explicit flags the pipeline auto-detects reference numbers from uploaded documents (e.g., “Tender# 20070”) and will attempt a CanadaBuys ingestion/fetch when those identifiers are present.
 
+## Observability Dashboard
+
+Visual debugging interface for pipeline inspection:
+
+```bash
+# Install dependencies
+poetry install
+
+# Launch dashboard
+./scripts/run_dashboard.sh
+```
+
+Dashboard opens at `http://localhost:8501` and provides:
+- **Overview**: Metrics, technical keywords, search terms
+- **Extracted Data**: Structured fields (volumes, certifications, contacts)
+- **Document Content**: All parsed sections with filtering
+- **Vendors**: Discovery and matching results with scores
+- **Debug**: Full profile dumps and API metadata
+
+See [`docs/DASHBOARD_GUIDE.md`](docs/DASHBOARD_GUIDE.md) for detailed usage.
+
+### LLM Tracing (Optional)
+
+For debugging prompts and LLM calls, integrate LangSmith:
+
+```bash
+# Add to .env
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your_key
+LANGCHAIN_PROJECT=vendor-agent
+
+poetry add langsmith
+```
+
+See [`docs/LANGSMITH_INTEGRATION.md`](docs/LANGSMITH_INTEGRATION.md) for setup.
+
 ## Next Steps
 - Replace placeholder logic in each module with the planned implementations (deterministic parsing, GPT requirement extraction, multi-source discovery, enrichment via Apollo/Hunter, LLM capability matching).
 - Extend `RuntimeConfig` to load API keys from environment variables or a secrets manager.

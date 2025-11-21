@@ -24,6 +24,7 @@ from .modules import (
     DocumentFetcher,
     DocumentParser,
     MetadataBackfill,
+    OpenAIProvider,
     OutputGenerator,
     RequirementExtractor,
     VendorDiscovery,
@@ -52,11 +53,24 @@ class TenderVendorPipeline:
 
     def __init__(self, config: Optional[RuntimeConfig] = None) -> None:
         cfg = config or RuntimeConfig()
+        
+        # Initialize LLM provider if configured
+        # Use CHEAP model (gpt-4o-mini) for TenderProfiler - simple keyword extraction task
+        llm_provider = None
+        try:
+            llm_provider = OpenAIProvider(
+                default_model=cfg.llm.cheap_model,  # Use cheap model for profiling
+                use_flex_tier=cfg.llm.use_flex_tier
+            )
+            logging.info("LLM provider initialized with model: %s", cfg.llm.cheap_model)
+        except (ImportError, ValueError) as exc:
+            logging.warning("LLM provider not available: %s. Using fallback mode.", exc)
+        
         self.context = PipelineContext(
             config=cfg,
             document_parser=DocumentParser(),
             document_fetcher=DocumentFetcher(),
-            requirement_extractor=RequirementExtractor(),
+            requirement_extractor=RequirementExtractor(llm_provider=llm_provider),
             vendor_discovery=VendorDiscovery(),
             vendor_enricher=VendorEnricher(),
             vendor_filter=VendorFilter(),

@@ -18,8 +18,10 @@ class Paths:
 
 @dataclass
 class LLMConfig:
-    model: str = "gpt-4"
-    fallback_model: str = "gpt-3.5-turbo"
+    smart_model: str = "gpt-5.1"
+    cheap_model: str = "gpt-5-mini"
+    vision_model: str = "gpt-5-mini"
+    use_flex_tier: bool = True
     max_tokens: int = 6000
     temperature: float = 0.0
 
