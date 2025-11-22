@@ -150,17 +150,39 @@ Return valid JSON with this structure:
 
         try:
             content = self.llm_provider.generate(prompt, response_format="json")
+            self.logger.debug(f"LLM response length: {len(content)} chars")
+            
             data = json.loads(content)
             
+            sector = data.get("sector", "Unknown")
+            keywords = data.get("technical_keywords", [])
+            search_terms = data.get("search_terms", [])
+            
+            if sector == "Unknown" or not keywords:
+                self.logger.warning(
+                    f"LLM returned incomplete data: sector={sector}, "
+                    f"keywords={len(keywords)}, search_terms={len(search_terms)}"
+                )
+                self.logger.debug(f"LLM raw response: {content[:500]}")
+            
             return TenderContext(
-                sector=data.get("sector", "Unknown"),
+                sector=sector,
                 industry_description=data.get("industry_description", ""),
-                technical_keywords=data.get("technical_keywords", []),
-                search_terms=data.get("search_terms", []),
+                technical_keywords=keywords,
+                search_terms=search_terms,
             )
         
+        except json.JSONDecodeError as exc:
+            self.logger.error(f"Failed to parse LLM JSON response: {exc}")
+            self.logger.debug(f"Raw LLM output: {content[:1000] if 'content' in locals() else 'N/A'}")
+            return TenderContext(
+                sector="Unknown",
+                industry_description="Failed to parse LLM response",
+                technical_keywords=[],
+                search_terms=[],
+            )
         except Exception as exc:
-            self.logger.error("Failed to generate tender context: %s", exc)
+            self.logger.error(f"Failed to generate tender context: {exc}")
             return TenderContext(
                 sector="Unknown",
                 industry_description="Failed to analyze tender scope",

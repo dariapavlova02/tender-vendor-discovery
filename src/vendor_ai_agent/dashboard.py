@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import zipfile
 from pathlib import Path
 from typing import List, Optional
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 try:
     import streamlit as st
@@ -71,6 +76,75 @@ def render_config_sidebar() -> RuntimeConfig:
         return config
 
 
+def extract_zip(zip_path: Path, extract_dir: Path) -> List[Path]:
+    extracted_files = []
+    
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for file_info in zip_ref.filelist:
+            if file_info.is_dir():
+                continue
+            
+            file_name = Path(file_info.filename).name
+            if file_name.startswith('.') or file_name.startswith('__MACOSX'):
+                continue
+            
+            suffix = Path(file_name).suffix.lower()
+            if suffix in {'.pdf', '.docx', '.xlsx', '.xls', '.doc'}:
+                extracted_path = extract_dir / file_name
+                
+                if extracted_path.exists():
+                    base = extracted_path.stem
+                    suffix = extracted_path.suffix
+                    counter = 1
+                    while extracted_path.exists():
+                        extracted_path = extract_dir / f"{base}_{counter}{suffix}"
+                        counter += 1
+                
+                with zip_ref.open(file_info.filename) as source, open(extracted_path, 'wb') as target:
+                    target.write(source.read())
+                
+                extracted_files.append(extracted_path)
+                logger.info(f"Extracted: {extracted_path.name}")
+    
+    return extracted_files
+
+
+def find_primary_rfp(files: List[Path]) -> Optional[Path]:
+    """Identify the primary RFP document from a list of files.
+    
+    Heuristics:
+    - Prefer files with 'RFP', 'RFQ', 'RFB', 'Tender' in name
+    - Prefer larger PDF files (likely main document)
+    - Exclude obvious attachments (Attachment, Appendix, Schedule, etc.)
+    """
+    if not files:
+        return None
+    
+    pdf_files = [f for f in files if f.suffix.lower() == '.pdf']
+    
+    if not pdf_files:
+        return files[0]
+    
+    attachment_keywords = ['attachment', 'appendix', 'schedule', 'exhibit', 'annex', 'form']
+    rfp_keywords = ['rfp', 'rfq', 'rfb', 'tender', 'solicitation', 'bid']
+    
+    scored_files = []
+    for pdf in pdf_files:
+        name_lower = pdf.name.lower()
+        score = pdf.stat().st_size
+        
+        if any(kw in name_lower for kw in attachment_keywords):
+            score *= 0.1
+        
+        if any(kw in name_lower for kw in rfp_keywords):
+            score *= 10
+        
+        scored_files.append((score, pdf))
+    
+    scored_files.sort(reverse=True, key=lambda x: x[0])
+    return scored_files[0][1] if scored_files else pdf_files[0]
+
+
 def save_uploaded_files(uploaded_files) -> List[Path]:
     temp_dir = Path("temp_upload")
     temp_dir.mkdir(exist_ok=True)
@@ -80,7 +154,14 @@ def save_uploaded_files(uploaded_files) -> List[Path]:
         path = temp_dir / uploaded_file.name
         with open(path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        file_paths.append(path)
+        
+        if path.suffix.lower() == '.zip':
+            logger.info(f"Extracting ZIP archive: {path.name}")
+            extracted = extract_zip(path, temp_dir)
+            file_paths.extend(extracted)
+            logger.info(f"Extracted {len(extracted)} files from {path.name}")
+        else:
+            file_paths.append(path)
     
     return file_paths
 
@@ -94,7 +175,7 @@ def render_overview_tab(artifacts: PipelineArtifacts):
         st.metric("Total Sections", len(artifacts.tender_sections))
     
     with col2:
-        sector = artifacts.tender_profile.doc_extracted.structured.sector or "Unknown"
+        sector = artifacts.tender_profile.dynamic_context.sector or "Unknown"
         st.metric("Detected Sector", sector)
     
     with col3:
@@ -174,7 +255,7 @@ def render_extraction_tab(artifacts: PipelineArtifacts):
                     "Unit": vol.unit or "N/A"
                 })
             if pd:
-                st.dataframe(pd.DataFrame(volume_data), use_container_width=True)
+                st.dataframe(pd.DataFrame(volume_data), width="stretch")
             else:
                 st.json(volume_data)
         else:
@@ -281,7 +362,7 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
         
         if pd:
             df = pd.DataFrame(match_data)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
         else:
             st.json(match_data)
         
@@ -315,7 +396,7 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
         
         if pd:
             df = pd.DataFrame(vendor_data)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
         else:
             st.json(vendor_data)
     
@@ -385,9 +466,30 @@ def main():
         st.info("👆 Upload tender documents to start processing")
         return
     
+    all_file_paths = save_uploaded_files(uploaded_files)
+    
+    if len(all_file_paths) > 1:
+        st.markdown("### 📂 Detected Files")
+        primary = find_primary_rfp(all_file_paths)
+        
+        st.info(f"🎯 **Primary document detected:** `{primary.name if primary else 'None'}`\n\n"
+                f"Processing only the primary RFP document to ensure optimal extraction quality. "
+                f"All {len(all_file_paths)} files are available in `temp_upload/` directory.")
+        
+        with st.expander(f"View all {len(all_file_paths)} files"):
+            for fp in all_file_paths:
+                is_primary = fp == primary
+                icon = "📄" if is_primary else "📎"
+                label = " **(PRIMARY)**" if is_primary else ""
+                st.markdown(f"{icon} `{fp.name}` ({fp.stat().st_size // 1024} KB){label}")
+        
+        selected_files = [primary] if primary else all_file_paths[:1]
+    else:
+        selected_files = all_file_paths
+    
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        run_button = st.button("🚀 Run Pipeline", type="primary", use_container_width=True)
+        run_button = st.button("🚀 Run Pipeline", type="primary", width="stretch")
     
     if not run_button:
         return
@@ -395,10 +497,6 @@ def main():
     try:
         status_text = st.empty()
         progress_bar = st.progress(0)
-        
-        status_text.text("💾 Saving uploaded files...")
-        file_paths = save_uploaded_files(uploaded_files)
-        progress_bar.progress(10)
         
         status_text.text("🔧 Initializing pipeline...")
         pipeline = TenderVendorPipeline(config)
@@ -413,7 +511,7 @@ def main():
         status_text.text("🔍 Discovering & enriching vendors...")
         progress_bar.progress(70)
         
-        artifacts = pipeline.run(file_paths, disable_auto_ingestion=not config.enable_auto_ingestion)
+        artifacts = pipeline.run(selected_files, disable_auto_ingestion=not config.enable_auto_ingestion)
         
         progress_bar.progress(100)
         status_text.text("✅ Pipeline completed successfully!")

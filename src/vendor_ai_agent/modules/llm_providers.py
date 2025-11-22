@@ -75,8 +75,8 @@ class OpenAIProvider(LLMProvider):
             
             # Apply constraints for gpt-5-mini and gpt-5-nano
             if "mini" in target_model.lower() or "nano" in target_model.lower():
-                params["max_completion_tokens"] = 1000
-                self.logger.info("Applied GPT-5 mini/nano constraints: max_completion_tokens=1000")
+                params["max_completion_tokens"] = 2500
+                self.logger.info("Applied GPT-5 mini/nano constraints: max_completion_tokens=2500")
             else:
                 # Only non-mini/nano models support temperature control
                 params["temperature"] = 0.1
@@ -87,6 +87,7 @@ class OpenAIProvider(LLMProvider):
             
             # Enable flex tier if configured (50% discount, slower)
             if self.use_flex_tier:
+                params["store"] = True
                 params["metadata"] = {"tier": "flex"}
             
             response = self.client.chat.completions.create(**params)
