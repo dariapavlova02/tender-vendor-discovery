@@ -1,9 +1,0 @@
-@@ -350,7 +349,7 @@
-     result = filter_engine.filter(profile, vendors)
-     
-     assert result[0].company_name == "CA High Performer"
--    assert result[0].preliminary_score == 90.0
-+    assert result[0].preliminary_score == 75.0
-     assert result[0].geo_score == 0.0
-     
-     assert result[1].company_name == "MA Average"
