@@ -7,3 +7,12 @@ __pycache__/
 .venv/
 .env
 outputs/
+
+# Large data files
+data/canada_history/*.csv
+
+# Database files
+*.db
+*.db.*
+*.sqlite
+*.sqlite3
