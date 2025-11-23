@@ -1,0 +1,13 @@
+company_name,website,email,phone,location,industry,source,capability_match_score,rationale,references,enrichment_flags
+TADA TRADING & CO LLC,,,,"SMYRNA, GA",,sam_entity,50.0,"TADA TRADING & CO LLC - located in SMYRNA, GA - for Vehicle project requirements.",[''],['sam_registered']
+"PAPER WRITER, LLC",,,,"DECATUR, GA",,sam_entity,50.0,"PAPER WRITER, LLC - located in DECATUR, GA - for Vehicle project requirements.",[''],['sam_registered']
+FAST TRACK GRADING CONTRACTING LLC,https://fasttrackgrading.com/,,,"AUSTELL, GA",,sam_entity,50.0,"FAST TRACK GRADING CONTRACTING LLC - located in AUSTELL, GA - for Vehicle project requirements.",['https://fasttrackgrading.com/'],['sam_registered']
+SUN HAN LLC,www.sunhanllc.com,,,"Miami, FL",,sam_entity,50.0,"SUN HAN LLC - located in Miami, FL - for Vehicle project requirements.",['www.sunhanllc.com'],['sam_registered']
+Proud Ward Solutions LLC,,,,"Naples, FL",,sam_entity,50.0,"Proud Ward Solutions LLC - located in Naples, FL - for Vehicle project requirements.",[''],['sam_registered']
+OPULETTA LLC,https://www.opuletta.com/,,,"DORAL, FL",,sam_entity,50.0,"OPULETTA LLC - located in DORAL, FL - for Vehicle project requirements.",['https://www.opuletta.com/'],['sam_registered']
+Nadia Tavitian,,,,"Miami, FL",,sam_entity,50.0,"Nadia Tavitian - located in Miami, FL - for Vehicle project requirements.",[''],['sam_registered']
+"NICKSON GENERAL CONTRACTORS, INC",https://www.nicksongeneral.com,,,"Memphis, TN",,sam_entity,50.0,"NICKSON GENERAL CONTRACTORS, INC - located in Memphis, TN - for Vehicle project requirements.",['https://www.nicksongeneral.com'],['sam_registered']
+FASHION CENTER DG LLC,www.josegalindofashion.com,,,"Miami, FL",,sam_entity,50.0,"FASHION CENTER DG LLC - located in Miami, FL - for Vehicle project requirements.",['www.josegalindofashion.com'],['sam_registered']
+Blue Border Solutions LLC,,,,"Kissimmee, FL",,sam_entity,50.0,"Blue Border Solutions LLC - located in Kissimmee, FL - for Vehicle project requirements.",[''],['sam_registered']
+ALMYRATION LLC,,,,"Davie, FL",,sam_entity,50.0,"ALMYRATION LLC - located in Davie, FL - for Vehicle project requirements.",[''],['sam_registered']
+75 Holdings LLC,,,,"Geneva, FL",,sam_entity,50.0,"75 Holdings LLC - located in Geneva, FL - for Vehicle project requirements.",[''],['sam_registered']

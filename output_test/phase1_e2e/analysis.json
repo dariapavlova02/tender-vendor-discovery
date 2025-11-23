@@ -1,0 +1,43 @@
+{
+  "tender": {
+    "id": null,
+    "country": null,
+    "sections": 834,
+    "naics": [
+      "315210"
+    ],
+    "location": {
+      "city": "Glynco",
+      "state": "GA"
+    }
+  },
+  "vendors": {
+    "discovered": 50,
+    "enriched": 50,
+    "filtered": 12,
+    "final_matches": 12
+  },
+  "scraping": {
+    "attempted": 5,
+    "successful": 2,
+    "failed": 3,
+    "no_website": 7,
+    "success_rate": "40.0%"
+  },
+  "capability_matching": {
+    "llm_assessed": 2,
+    "rule_based": 10
+  },
+  "performance": {
+    "total_time_seconds": 110.6,
+    "init_time_seconds": 1.05,
+    "pipeline_time_seconds": 109.54
+  },
+  "filtering_metrics": {
+    "total_input": 50,
+    "duplicates_removed": 0,
+    "geo_filtered": 38,
+    "eligibility_filtered": 0,
+    "final_count": 12
+  }
+}

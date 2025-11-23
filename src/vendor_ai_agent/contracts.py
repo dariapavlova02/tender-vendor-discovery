@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, List, Optional, Protocol
 
-from .models import TenderProfile, TenderSection, VendorMatchResult, VendorRecord
+from .models import FilteringMetrics, TenderProfile, TenderSection, VendorMatchResult, VendorRecord
 
 
 class DocumentParserContract(Protocol):
@@ -43,6 +43,9 @@ class VendorEnricherContract(Protocol):
 
 class VendorFilterContract(Protocol):
     def filter(self, profile: TenderProfile, vendors: Iterable[VendorRecord]) -> List[VendorRecord]:
+        ...
+    
+    def get_metrics(self) -> FilteringMetrics:
         ...
 
 

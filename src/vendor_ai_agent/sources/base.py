@@ -15,3 +15,6 @@ class BaseVendorSource:
 
     def search(self, profile: TenderProfile) -> List[VendorRecord]:
         raise NotImplementedError
+    
+    def is_compatible(self, profile: TenderProfile) -> bool:
+        return True

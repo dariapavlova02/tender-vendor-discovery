@@ -14,6 +14,10 @@ class TenderContext:
     industry_description: str
     technical_keywords: List[str] = field(default_factory=list)
     search_terms: List[str] = field(default_factory=list)
+    gsin_codes: List[str] = field(default_factory=list)
+    unspsc_codes: List[str] = field(default_factory=list)
+    province: Optional[str] = None
+    country: Optional[str] = None
 
 
 class LLMProvider(ABC):
@@ -136,6 +140,12 @@ class TenderProfiler:
 2. A brief industry description (1-2 sentences)
 3. A list of 15-20 technical keywords critical for finding qualified vendors
 4. A list of 5-10 search terms optimized for finding vendors (e.g., "ammunition suppliers ontario", "frangible bullet manufacturers")
+5. Canadian GSIN codes (2, 4, or 6 digit goods/services identification numbers) if mentioned
+6. UNSPSC codes (8-digit universal product/service codes) if mentioned
+7. Canadian province/territory if this is a Canadian procurement (ON, QC, BC, AB, MB, SK, NS, NB, NL, PE, NT, YT, NU)
+8. Country of origin for this tender (USA, Canada, or null if unclear). Indicators:
+   - USA: mentions of federal agencies (DHS, DOD, GSA), US states, NAICS codes, SAM.gov, FAR regulations
+   - Canada: mentions of Canadian agencies (PSPC, PWGSC), provinces, GSIN codes, buyandsell.gc.ca, SACC manual
 
 Scope:
 {smart_context[:max_tokens * 4]}
@@ -145,9 +155,14 @@ Return valid JSON with this structure:
   "sector": "...",
   "industry_description": "...",
   "technical_keywords": ["keyword1", "keyword2", ...],
-  "search_terms": ["search term 1", "search term 2", ...]
+  "search_terms": ["search term 1", "search term 2", ...],
+  "gsin_codes": ["12", "1234", ...],
+  "unspsc_codes": ["12345678", ...],
+  "province": "ON" or null,
+  "country": "USA" or "Canada" or null
 }}"""
 
+        content = None
         try:
             content = self.llm_provider.generate(prompt, response_format="json")
             self.logger.debug(f"LLM response length: {len(content)} chars")
@@ -170,11 +185,16 @@ Return valid JSON with this structure:
                 industry_description=data.get("industry_description", ""),
                 technical_keywords=keywords,
                 search_terms=search_terms,
+                gsin_codes=data.get("gsin_codes", []),
+                unspsc_codes=data.get("unspsc_codes", []),
+                province=data.get("province"),
+                country=data.get("country"),
             )
         
         except json.JSONDecodeError as exc:
             self.logger.error(f"Failed to parse LLM JSON response: {exc}")
-            self.logger.debug(f"Raw LLM output: {content[:1000] if 'content' in locals() else 'N/A'}")
+            if content:
+                self.logger.debug(f"Raw LLM output: {content[:1000]}")
             return TenderContext(
                 sector="Unknown",
                 industry_description="Failed to parse LLM response",

@@ -1,0 +1,206 @@
+[
+  {
+    "company_name": "TADA TRADING & CO LLC",
+    "website": null,
+    "email": null,
+    "phone": null,
+    "location": "SMYRNA, GA",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "TADA TRADING & CO LLC - located in SMYRNA, GA - for Vehicle project requirements.",
+    "references": [
+      ""
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "PAPER WRITER, LLC",
+    "website": null,
+    "email": null,
+    "phone": null,
+    "location": "DECATUR, GA",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "PAPER WRITER, LLC - located in DECATUR, GA - for Vehicle project requirements.",
+    "references": [
+      ""
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "FAST TRACK GRADING CONTRACTING LLC",
+    "website": "https://fasttrackgrading.com/",
+    "email": null,
+    "phone": null,
+    "location": "AUSTELL, GA",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "FAST TRACK GRADING CONTRACTING LLC - located in AUSTELL, GA - for Vehicle project requirements.",
+    "references": [
+      "https://fasttrackgrading.com/"
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "SUN HAN LLC",
+    "website": "www.sunhanllc.com",
+    "email": null,
+    "phone": null,
+    "location": "Miami, FL",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "SUN HAN LLC - located in Miami, FL - for Vehicle project requirements.",
+    "references": [
+      "www.sunhanllc.com"
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "Proud Ward Solutions LLC",
+    "website": null,
+    "email": null,
+    "phone": null,
+    "location": "Naples, FL",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "Proud Ward Solutions LLC - located in Naples, FL - for Vehicle project requirements.",
+    "references": [
+      ""
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "OPULETTA LLC",
+    "website": "https://www.opuletta.com/",
+    "email": null,
+    "phone": null,
+    "location": "DORAL, FL",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "OPULETTA LLC - located in DORAL, FL - for Vehicle project requirements.",
+    "references": [
+      "https://www.opuletta.com/"
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "Nadia Tavitian",
+    "website": null,
+    "email": null,
+    "phone": null,
+    "location": "Miami, FL",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "Nadia Tavitian - located in Miami, FL - for Vehicle project requirements.",
+    "references": [
+      ""
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "NICKSON GENERAL CONTRACTORS, INC",
+    "website": "https://www.nicksongeneral.com",
+    "email": null,
+    "phone": null,
+    "location": "Memphis, TN",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "NICKSON GENERAL CONTRACTORS, INC - located in Memphis, TN - for Vehicle project requirements.",
+    "references": [
+      "https://www.nicksongeneral.com"
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "FASHION CENTER DG LLC",
+    "website": "www.josegalindofashion.com",
+    "email": null,
+    "phone": null,
+    "location": "Miami, FL",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "FASHION CENTER DG LLC - located in Miami, FL - for Vehicle project requirements.",
+    "references": [
+      "www.josegalindofashion.com"
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "Blue Border Solutions LLC",
+    "website": null,
+    "email": null,
+    "phone": null,
+    "location": "Kissimmee, FL",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "Blue Border Solutions LLC - located in Kissimmee, FL - for Vehicle project requirements.",
+    "references": [
+      ""
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "ALMYRATION LLC",
+    "website": null,
+    "email": null,
+    "phone": null,
+    "location": "Davie, FL",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "ALMYRATION LLC - located in Davie, FL - for Vehicle project requirements.",
+    "references": [
+      ""
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  },
+  {
+    "company_name": "75 Holdings LLC",
+    "website": null,
+    "email": null,
+    "phone": null,
+    "location": "Geneva, FL",
+    "industry": null,
+    "source": "sam_entity",
+    "capability_match_score": 50.0,
+    "rationale": "75 Holdings LLC - located in Geneva, FL - for Vehicle project requirements.",
+    "references": [
+      ""
+    ],
+    "enrichment_flags": [
+      "sam_registered"
+    ]
+  }
+]

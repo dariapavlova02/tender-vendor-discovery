@@ -15,8 +15,14 @@ class VendorDiscovery(VendorDiscoveryContract):
         self.sources: List[VendorSource] = list(sources or [StaticDirectorySource()])
 
     def discover(self, profile: TenderProfile) -> List[VendorRecord]:
+        import logging
+        logger = logging.getLogger(__name__)
+        
         vendors: List[VendorRecord] = []
         for source in self.sources:
+            if hasattr(source, 'is_compatible') and not source.is_compatible(profile):
+                logger.info(f"Skipping {source.name} - incompatible with tender")
+                continue
             vendors.extend(source.search(profile))
         return vendors
 

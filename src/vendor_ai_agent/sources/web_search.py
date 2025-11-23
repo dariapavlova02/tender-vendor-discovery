@@ -6,7 +6,10 @@ import time
 from typing import List, Optional
 from urllib.parse import urlparse
 
-from duckduckgo_search import DDGS
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    DDGS = None
 
 from ..models import TenderProfile, VendorRecord
 from .base import BaseVendorSource
@@ -48,6 +51,8 @@ class WebSearchVendorSource(BaseVendorSource):
         search_delay: float = 2.0,
         enable_logging: bool = True,
     ):
+        if DDGS is None:
+            raise ImportError("duckduckgo_search is required for WebSearchVendorSource")
         super().__init__(name="web_search")
         self.max_results_per_query = max_results_per_query
         self.max_queries = max_queries

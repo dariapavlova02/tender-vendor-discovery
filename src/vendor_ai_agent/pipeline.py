@@ -33,6 +33,11 @@ from .modules import (
 )
 
 
+from .sources.sam_entity import SamEntitySource
+from .sources import CanadaContractsVendorSource
+from .database.connection import get_session
+from .enrichment_providers import WebsiteContentProvider
+
 @dataclass
 class PipelineContext:
     config: RuntimeConfig
@@ -66,15 +71,42 @@ class TenderVendorPipeline:
         except (ImportError, ValueError) as exc:
             logging.warning("LLM provider not available: %s. Using fallback mode.", exc)
         
+        # Initialize sources
+        sam_source = SamEntitySource(
+            api_key=cfg.sam_api.api_key,
+            sync_to_db=True
+        )
+        
+        sources = [sam_source]
+        
+        try:
+            canada_source = CanadaContractsVendorSource()
+            sources.append(canada_source)
+            logging.info("Canada Contracts source initialized successfully")
+        except Exception as exc:
+            logging.warning("Failed to initialize Canada Contracts source: %s", exc)
+        
+        # Initialize enrichment providers
+        enrichment_providers = []
+        if cfg.capability_matching.enable_website_scraping:
+            from .modules.website_scraper import WebsiteScraper
+            scraper = WebsiteScraper(
+                timeout_seconds=cfg.capability_matching.scrape_timeout_seconds,
+                max_content_chars=cfg.capability_matching.max_content_chars
+            )
+            website_provider = WebsiteContentProvider(scraper=scraper)
+            enrichment_providers.append(website_provider)
+            logging.info("WebsiteContentProvider registered for enrichment")
+        
         self.context = PipelineContext(
             config=cfg,
             document_parser=DocumentParser(),
             document_fetcher=DocumentFetcher(),
             requirement_extractor=RequirementExtractor(llm_provider=llm_provider),
-            vendor_discovery=VendorDiscovery(),
-            vendor_enricher=VendorEnricher(),
-            vendor_filter=VendorFilter(),
-            capability_matcher=CapabilityMatcher(),
+            vendor_discovery=VendorDiscovery(sources=sources),
+            vendor_enricher=VendorEnricher(providers=enrichment_providers),
+            vendor_filter=VendorFilter(config=cfg.filtering),
+            capability_matcher=CapabilityMatcher(llm_provider=llm_provider, config=cfg.capability_matching),
             output_generator=OutputGenerator(),
             ingestion_router=TenderIngestionRouter.from_config(cfg),
             metadata_backfill=MetadataBackfill(),
@@ -108,12 +140,15 @@ class TenderVendorPipeline:
         discovered_vendors = self.context.vendor_discovery.discover(tender_profile)
         enriched_vendors = self.context.vendor_enricher.enrich(discovered_vendors)
         filtered_vendors = self.context.vendor_filter.filter(tender_profile, enriched_vendors)
+        filtering_metrics = self.context.vendor_filter.get_metrics()
         matches = self.context.capability_matcher.score(tender_profile, filtered_vendors)
         return PipelineArtifacts(
             tender_sections=sections,
             tender_profile=tender_profile,
             raw_vendors=discovered_vendors,
             enriched_vendors=enriched_vendors,
+            filtered_vendors=filtered_vendors,
+            filtering_metrics=filtering_metrics,
             final_matches=matches,
         )
 

@@ -254,6 +254,7 @@ class StructuredDocData:
     contract_terms: ContractTerms = field(default_factory=ContractTerms)
     clarifications: List[Clarification] = field(default_factory=list)
     amendments: List[Amendment] = field(default_factory=list)
+    naics_codes: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -300,6 +301,10 @@ class DynamicTenderContext:
     industry_description: str = ""
     technical_keywords: List[str] = field(default_factory=list)
     search_terms: List[str] = field(default_factory=list)
+    gsin_codes: List[str] = field(default_factory=list)
+    unspsc_codes: List[str] = field(default_factory=list)
+    province: Optional[str] = None
+    country: Optional[str] = None
 
 
 @dataclass
@@ -325,10 +330,23 @@ class VendorRecord:
     email: Optional[str] = None
     phone: Optional[str] = None
     location: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
     industry: Optional[str] = None
     source: Optional[str] = None
     is_past_winner: bool = False
     enrichment_flags: List[str] = field(default_factory=list)
+    uei: Optional[str] = None
+    duns: Optional[str] = None
+    cage_code: Optional[str] = None
+    business_types: List[str] = field(default_factory=list)
+    primary_contact: Optional[ContactInfo] = None
+    geo_score: float = 0.0
+    preliminary_score: float = 0.0
+    filtering_metadata: Dict[str, Any] = field(default_factory=dict)
+    total_contract_value: Optional[float] = None
+    contract_count: Optional[int] = None
 
 
 @dataclass
@@ -340,9 +358,23 @@ class VendorMatchResult:
 
 
 @dataclass
+class FilteringMetrics:
+    total_input: int = 0
+    duplicates_removed: int = 0
+    geo_filtered: int = 0
+    eligibility_filtered: int = 0
+    final_count: int = 0
+    local_vendors: int = 0
+    national_vendors: int = 0
+    filter_reasons: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
 class PipelineArtifacts:
     tender_sections: List[TenderSection]
     tender_profile: TenderProfile
     raw_vendors: List[VendorRecord]
     enriched_vendors: List[VendorRecord]
     final_matches: List[VendorMatchResult]
+    filtered_vendors: List[VendorRecord] = field(default_factory=list)
+    filtering_metrics: Optional[FilteringMetrics] = None

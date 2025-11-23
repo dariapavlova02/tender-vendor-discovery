@@ -9,6 +9,7 @@ from ..models import (
     DocExtracted,
     DocSections,
     DynamicTenderContext,
+    PlaceOfPerformance,
     StructuredDocData,
     TenderProfile,
     TenderSection,
@@ -64,4 +65,15 @@ class RequirementExtractor(RequirementExtractorContract):
         profile.doc_extracted = doc_extracted
         profile.vendor_capability_profile = vendor_profile
         profile.dynamic_context = dynamic_context
+        
+        if structured.naics_codes:
+            profile.api_metadata.codes.naics = structured.naics_codes
+        
+        if structured.location and structured.location.state_province:
+            profile.api_metadata.place_of_performance = PlaceOfPerformance(
+                city=structured.location.city,
+                state_province=structured.location.state_province,
+                country=structured.location.country or "United States"
+            )
+        
         return profile

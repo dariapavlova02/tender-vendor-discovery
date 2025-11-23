@@ -146,7 +146,7 @@ def find_primary_rfp(files: List[Path]) -> Optional[Path]:
 
 
 def save_uploaded_files(uploaded_files) -> List[Path]:
-    temp_dir = Path("temp_upload")
+    temp_dir = Path("data/temp_upload")
     temp_dir.mkdir(exist_ok=True)
     
     file_paths = []
@@ -474,7 +474,7 @@ def main():
         
         st.info(f"🎯 **Primary document detected:** `{primary.name if primary else 'None'}`\n\n"
                 f"Processing only the primary RFP document to ensure optimal extraction quality. "
-                f"All {len(all_file_paths)} files are available in `temp_upload/` directory.")
+                f"All {len(all_file_paths)} files are available in `data/temp_upload/` directory.")
         
         with st.expander(f"View all {len(all_file_paths)} files"):
             for fp in all_file_paths:

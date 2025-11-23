@@ -105,6 +105,7 @@ class FieldExtractor:
         structured.mandatory_requirements = self._extract_mandatory_requirements(sections)
         structured.evaluation_criteria = self._extract_evaluation_criteria(sections, sections_list)
         structured.contract_terms = self._extract_contract_terms(sections)
+        structured.naics_codes = self._extract_naics_codes(sections, sections_list)
         
         if sections.tables:
             classified_tables = self._classify_and_sort_tables(sections.tables)
@@ -144,12 +145,209 @@ class FieldExtractor:
         
         return max(sector_scores.items(), key=lambda x: x[1])[0]
 
+    def _extract_location_chunks(self, text: str, max_chars: int = 2500) -> str:
+        """Extract relevant location mentions using prioritized regex patterns."""
+        if not text or len(text) < 20:
+            return ""
+        
+        patterns = [
+            (r'(?:place of performance|location of work|work location|project location)[^\n]{0,500}', 3.5),
+            (r'(?:contractor shall (?:provide|deliver|perform|service))[^\n]{0,400}', 3.2),
+            (r'(?:deliver to|delivery to|delivery location|ship to|shipping address):\s*[^\n]{20,400}', 3.0),
+            (r'(?:located at|located in|site located|facility located)[^\n]{0,300}', 2.8),
+            (r'(?:for|at|in)\s+(?:[A-Z][a-z]+,?\s+(?:and\s+)?){1,5}(?:academies|academy|centers?|facilities)[^\n]{0,200}', 2.7),
+            (r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),\s*([A-Z]{2})\s+\d{5}', 2.5),
+            (r'(?:training (?:academy|center|facility)|measuring (?:center|facility))[\s\w]*(?:at|in|located)?\s*([A-Z][a-z]+,\s*[A-Z]{2})?[^\n]{0,200}', 2.4),
+            (r'(?:work will be performed|services (?:will be )?performed)[^\n]{0,200}', 2.2),
+            (r'\d{3,5}\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}\s+(?:Street|Avenue|Road|Drive|Boulevard|Highway|Way|Circle)', 2.0),
+            (r'(?:academy|center|facility|headquarters|office)\s+address[^\n]{0,300}', 1.8),
+        ]
+        
+        chunks_with_scores = []
+        seen_normalized = set()
+        
+        for pattern, priority in patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE):
+                chunk = match.group(0).strip()
+                
+                if len(chunk) < 20:
+                    continue
+                
+                chunk_normalized = re.sub(r'\s+', ' ', chunk.lower())
+                
+                if chunk_normalized in seen_normalized:
+                    continue
+                
+                invalid_keywords = [
+                    'password', 'username', 'login', 'email', 'phone', 'fax', 
+                    'employee', 'personnel', 'agreement information', 'economic powers',
+                    'organization per', 'private or non-governmental', 'peacekeeping force',
+                    'cfr', 'ofac', 'emergency economic'
+                ]
+                if any(kw in chunk_normalized for kw in invalid_keywords):
+                    continue
+                
+                if 'international' in chunk_normalized:
+                    if not any(kw in chunk_normalized for kw in ['performed', 'delivery', 'location', 'conus', 'oconus']):
+                        continue
+                
+                chunks_with_scores.append((chunk, priority, len(chunk)))
+                seen_normalized.add(chunk_normalized)
+        
+        chunks_with_scores.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        
+        selected_chunks = []
+        total_chars = 0
+        
+        for chunk, _, chunk_len in chunks_with_scores:
+            if total_chars + chunk_len + 2 > max_chars:
+                break
+            selected_chunks.append(chunk)
+            total_chars += chunk_len + 2
+        
+        result = "\n\n".join(selected_chunks)
+        
+        if not result and len(text) > 0:
+            result = text[:max_chars]
+        
+        return result
+
+    def _extract_location_with_llm(self, text: str) -> Optional[Address]:
+        """Extract location using LLM with focused context."""
+        if not self.llm_provider or not text or len(text) < 20:
+            return None
+        
+        try:
+            prompt = f"""Extract the PRIMARY place of performance for vendor search from this tender document.
+
+{text}
+
+Determine:
+1. Scope: Is this single location, multiple locations, nationwide, or international?
+2. PRIMARY location: The most important location for finding nearby vendors
+3. Extract city and state (use 2-letter state code like GA, NM, SC, CA, TX, NY)
+
+Return JSON:
+{{
+  "scope": "single|multiple|nationwide|international",
+  "primary_city": "Glynco",
+  "primary_state": "GA",
+  "all_locations": ["Glynco, GA", "Artesia, NM"],
+  "confidence": "high|medium|low",
+  "country": "United States"
+}}
+
+Rules:
+- Use 2-letter state codes (GA, NM, SC, CA, TX, NY, FL, etc.)
+- If nationwide/CONUS: set primary_city="Nationwide", primary_state=null
+- If multiple equal locations: pick the first/most prominent one as primary
+- If international/overseas: set country accordingly
+- Return ONLY valid JSON, no other text"""
+
+            response = self.llm_provider.generate(prompt)
+            if not response or not response.strip():
+                return None
+            
+            response = response.strip()
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+            response = response.strip()
+            
+            data = json.loads(response)
+            
+            if data.get("scope") == "nationwide":
+                return Address(
+                    city="Nationwide",
+                    state_province=None,
+                    country=data.get("country", "United States")
+                )
+            
+            city = data.get("primary_city")
+            state = data.get("primary_state")
+            
+            if city and state:
+                logging.info(f"LLM extracted location: {city}, {state} (confidence: {data.get('confidence', 'unknown')})")
+                return Address(
+                    city=city,
+                    state_province=state,
+                    country=data.get("country", "United States")
+                )
+            
+            if city and not state and data.get("scope") in ["nationwide", "multiple"]:
+                return Address(
+                    city=city,
+                    state_province=None,
+                    country=data.get("country", "United States")
+                )
+            
+            return None
+            
+        except json.JSONDecodeError as e:
+            logging.warning(f"LLM location extraction - invalid JSON: {e}")
+            return None
+        except Exception as e:
+            logging.warning(f"LLM location extraction failed: {e}")
+            return None
+
     def _infer_location(self, text: str) -> Address:
+        """Extract location with hybrid LLM-first + regex fallback strategy."""
         if not text:
             return Address()
-        city_match = re.search(r"(?:in|at)\s+([A-Za-z\s]+),\s*([A-Za-z\s]+)", text)
-        if city_match:
-            return Address(city=city_match.group(1).strip(), state_province=city_match.group(2).strip())
+        
+        location_chunks = self._extract_location_chunks(text, max_chars=2500)
+        
+        if location_chunks and self.llm_provider:
+            llm_result = self._extract_location_with_llm(location_chunks)
+            if llm_result and (llm_result.city or llm_result.state_province):
+                return llm_result
+        
+        logging.info("LLM location extraction unavailable or failed, using regex fallback")
+        
+        # Use chunks for fallback if available, otherwise full text
+        fallback_text = location_chunks if location_chunks else text
+        text_lower = fallback_text.lower()
+        
+        if any(kw in text_lower for kw in ["nationwide", "throughout the united states", "conus", "all states"]):
+            return Address(country="United States", city="Nationwide")
+        
+        if any(kw in text_lower for kw in ["overseas", "oconus", "international"]):
+            return Address(country="Multiple countries", city="International")
+        
+        if any(kw in text_lower for kw in ["multiple locations", "various locations"]):
+            return Address(city="Multiple locations", country="United States")
+        
+        invalid_cities = {"facilities", "systems", "information", "resources", "services", "operations"}
+        
+        city_state_patterns = [
+            (r"\b(Washington)\s+(DC)\b", True),
+            (r"(?:in|at|located in)\s+([A-Za-z]+(?:\s+[A-Z][a-z]+)?),\s*(Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|DC)\b", False),
+            (r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),\s*([A-Z]{2})\s+\d{5}\b", False),
+        ]
+        
+        state_abbrev_map = {
+            "New Mexico": "NM", "Georgia": "GA", "South Carolina": "SC",
+            "California": "CA", "Texas": "TX", "New York": "NY",
+            "Florida": "FL", "Virginia": "VA", "Maryland": "MD",
+        }
+        
+        for pattern, skip_validation in city_state_patterns:
+            match = re.search(pattern, fallback_text, re.IGNORECASE)
+            if match:
+                city = match.group(1).strip()
+                state = match.group(2).strip() if len(match.groups()) >= 2 else None
+                
+                if not skip_validation and city.lower() in invalid_cities:
+                    continue
+                
+                if state:
+                    state = state_abbrev_map.get(state, state)
+                
+                return Address(city=city, state_province=state, country="United States")
+        
         return Address()
 
     def _extract_volumes(self, text: str, sections_list: Optional[List[TenderSection]] = None) -> List[VolumeItem]:
@@ -538,6 +736,39 @@ Return JSON:
 
     def _valid_identifier(self, value: str) -> bool:
         return any(ch.isdigit() for ch in value)
+
+    def _extract_naics_codes(self, sections: DocSections, sections_list: Optional[List[TenderSection]] = None) -> List[str]:
+        from .keywords import NAICS_REGEXES
+        import pdfplumber
+        from pathlib import Path
+        
+        combined = "\n".join(filter(None, [
+            sections.scope_of_work,
+            sections.technical_requirements,
+            sections.mandatory_requirements
+        ]))
+        
+        if sections_list:
+            for section in sections_list[:50]:
+                combined += "\n" + section.content
+            
+            pdf_paths = [s.source_path for s in sections_list if s.source_path and s.source_path.suffix.lower() == '.pdf']
+            if pdf_paths:
+                try:
+                    with pdfplumber.open(pdf_paths[0]) as pdf:
+                        for page in pdf.pages[:5]:
+                            page_text = page.extract_text() or ""
+                            combined += "\n" + page_text
+                except Exception:
+                    pass
+        
+        naics_codes = []
+        for regex in NAICS_REGEXES:
+            for match in regex.finditer(combined):
+                code = match.group(1).strip()
+                if len(code) == 6 and code.isdigit() and code not in naics_codes:
+                    naics_codes.append(code)
+        return naics_codes
 
     def _classify_and_sort_tables(self, tables: List[TenderSection]) -> List[tuple[TenderSection, str]]:
         classified = []

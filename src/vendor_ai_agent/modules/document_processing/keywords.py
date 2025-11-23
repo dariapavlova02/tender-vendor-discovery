@@ -70,6 +70,17 @@ SECTION_HEADING_PATTERNS = {
         "work site",
         "delivery location",
         "place of delivery",
+        "delivery requirements",
+        "on-site",
+        "facility",
+        "facilities",
+        "service location",
+        "performance location",
+        "work location",
+        "project location",
+        "geographic",
+        "nationwide",
+        "multiple locations",
     ],
     "timeline_details": [
         "project schedule",
@@ -131,6 +142,20 @@ SECTION_CONTEXT_HINTS = {
         "business days",
         "no later than",
         "within",
+    ],
+    "location_details": [
+        "located at",
+        "located in",
+        "delivery to",
+        "deliver to",
+        "ship to",
+        "shipped to",
+        "address:",
+        "facility address",
+        "site address",
+        "place of performance",
+        "work will be performed",
+        "services will be performed",
     ],
 }
 
@@ -707,6 +732,14 @@ IDENTIFIER_REGEXES = {
 # ---------------------------------------------------------------------------
 # Regex patterns
 # ---------------------------------------------------------------------------
+
+NAICS_REGEXES = [
+    re.compile(r"NAICS[:\s]+(\d{6})", re.IGNORECASE),
+    re.compile(r"NAICS\s+[Cc]ode[:\s]+(\d{6})", re.IGNORECASE),
+    re.compile(r"(?:Primary|Main)\s+NAICS[:\s]+(\d{6})", re.IGNORECASE),
+    re.compile(r"COMPETITIVE\s+NAICS[:\s]+(\d{6})", re.IGNORECASE),
+    re.compile(r"8\(A\)\s+COMPETITIVE\s+NAICS[:\s]+(\d{6})", re.IGNORECASE),
+]
 
 EXPERIENCE_REGEXES = [
     re.compile(r"(\d+)\s+(years|year)\s+of\s+experience", re.IGNORECASE),
