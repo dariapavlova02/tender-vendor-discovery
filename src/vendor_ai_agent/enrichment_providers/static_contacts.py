@@ -11,8 +11,19 @@ class StaticContactsProvider(BaseEnrichmentProvider):
 
     def enrich(self, vendor: VendorRecord) -> VendorRecord:
         normalized = vendor.company_name.lower().replace(" ", "")
-        vendor.website = vendor.website or f"https://{normalized}.com"
-        vendor.email = vendor.email or f"info@{normalized}.com"
-        vendor.phone = vendor.phone or "+1-000-000-0000"
+        
+        if not vendor.website:
+            vendor.website = f"https://{normalized}.com"
+        
+        if not vendor.email:
+            vendor.email = f"info@{normalized}.com"
+            vendor.filtering_metadata["email_source"] = "fallback_static"
+            vendor.filtering_metadata["email_confidence"] = 0.1
+        
+        if not vendor.phone or vendor.phone == "N/A":
+            vendor.phone = "N/A"
+            vendor.filtering_metadata["phone_source"] = "fallback_na"
+            vendor.filtering_metadata["phone_confidence"] = 0.0
+        
         vendor.enrichment_flags.append(self.name)
         return vendor

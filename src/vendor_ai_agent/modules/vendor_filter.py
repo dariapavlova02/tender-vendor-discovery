@@ -92,23 +92,34 @@ class VendorFilter(VendorFilterContract):
     ) -> Tuple[List[VendorRecord], int, int]:
         logger.info(f"Stage 2: Geographic Filtering ({len(vendors)} vendors)")
 
+        sort_by_distance = self.config.enable_geographic_sorting
         expansion_mode = len(vendors) < self.config.national_expansion_threshold
 
-        if expansion_mode:
+        if sort_by_distance:
+            logger.info("  → Geographic sorting enabled (all vendors included, ranked by proximity)")
+        elif expansion_mode:
             logger.info(
                 f"  → National expansion triggered (vendor count {len(vendors)} < {self.config.national_expansion_threshold})"
             )
 
         filtered, local_count, national_count = (
             self.geographic_matcher.filter_by_geography(
-                profile, vendors, expansion_mode=expansion_mode
+                profile, vendors, 
+                expansion_mode=expansion_mode,
+                sort_by_distance=sort_by_distance
             )
         )
 
-        logger.info(
-            f"  → {len(filtered)} vendors after geo filtering "
-            f"({local_count} local, {national_count} national excluded unless expansion)"
-        )
+        if sort_by_distance:
+            logger.info(
+                f"  → {len(filtered)} vendors after geo sorting "
+                f"({local_count} local, {len(filtered) - local_count - national_count} regional, {national_count} national - all included)"
+            )
+        else:
+            logger.info(
+                f"  → {len(filtered)} vendors after geo filtering "
+                f"({local_count} local, {national_count} national excluded unless expansion)"
+            )
 
         return filtered, local_count, national_count
 

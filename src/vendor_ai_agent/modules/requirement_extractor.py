@@ -46,6 +46,10 @@ class RequirementExtractor(RequirementExtractorContract):
             industry_description=tender_context_data.industry_description,
             technical_keywords=tender_context_data.technical_keywords,
             search_terms=tender_context_data.search_terms,
+            gsin_codes=tender_context_data.gsin_codes,
+            unspsc_codes=tender_context_data.unspsc_codes,
+            province=tender_context_data.province,
+            country=tender_context_data.country,
         )
         
         # Pass dynamic keywords and LLM provider to field extractor

@@ -10,7 +10,7 @@ import requests
 from requests.exceptions import Timeout, HTTPError
 from sqlalchemy.orm import Session
 
-from ..database import CacheManager, Vendor, VendorNAICS, get_session
+from ..database import CacheManager, Vendor, VendorNAICS, VendorContact, get_session
 from ..models import TenderProfile, VendorRecord, ContactInfo
 from .base import BaseVendorSource
 
@@ -25,7 +25,8 @@ class SamEntitySource(BaseVendorSource):
         use_cache: bool = True,
         cache_ttl_days: int = 7,
         rate_limit_per_day: int = 1000,
-        sync_to_db: bool = True
+        sync_to_db: bool = True,
+        initial_fetch_limit: int = 2000
     ):
         super().__init__(name="sam_entity")
         self.api_key = api_key or os.getenv("SAM_API_KEY")
@@ -33,6 +34,7 @@ class SamEntitySource(BaseVendorSource):
         self.cache_ttl_days = cache_ttl_days
         self.rate_limit_per_day = rate_limit_per_day
         self.sync_to_db = sync_to_db
+        self.initial_fetch_limit = initial_fetch_limit
         
         if not self.api_key:
             # raise ValueError("SAM_API_KEY is required for SamEntitySource")
@@ -365,7 +367,7 @@ class SamEntitySource(BaseVendorSource):
                             entities = self.search_by_naics(
                                 naics_code=naics_code,
                                 state=state,
-                                limit=50,
+                                limit=self.initial_fetch_limit,
                                 db_session=db_session
                             )
                             
@@ -398,6 +400,30 @@ class SamEntitySource(BaseVendorSource):
                                                     is_primary=(naics_code == primary_naics)
                                                 )
                                                 db_session.add(naics_obj)
+                                            
+                                            points_of_contact = entity_data.get("entityRegistration", {}).get("pointsOfContact", {})
+                                            if points_of_contact:
+                                                poc = (points_of_contact.get("governmentBusinessPOC") or 
+                                                       points_of_contact.get("electronicBusinessPOC") or 
+                                                       points_of_contact.get("pastPerformancePOC"))
+                                                
+                                                if poc and (poc.get("email") or poc.get("usPhone")):
+                                                    poc_type = "governmentBusinessPOC" if points_of_contact.get("governmentBusinessPOC") else \
+                                                               "electronicBusinessPOC" if points_of_contact.get("electronicBusinessPOC") else \
+                                                               "pastPerformancePOC"
+                                                    
+                                                    contact_obj = VendorContact(
+                                                        vendor_id=vendor_obj.id,
+                                                        source="sam_gov_poc",
+                                                        first_name=poc.get("firstName"),
+                                                        last_name=poc.get("lastName"),
+                                                        email=poc.get("email"),
+                                                        phone=poc.get("usPhone"),
+                                                        is_verified=True,
+                                                        confidence_score=90,
+                                                        metadata_json={"poc_type": poc_type}
+                                                    )
+                                                    db_session.add(contact_obj)
                                         
                                         db_session.commit()
                                 
@@ -406,61 +432,9 @@ class SamEntitySource(BaseVendorSource):
                                     vendors.append(vendor_record)
                         except Exception as e:
                             print(f"Error searching SAM API for NAICS {naics_code}: {e}")
-                    
-                    # Fallback or primary: Search DB
-                    # If we didn't search API (no key) or even if we did, let's pull from DB to be sure we get everything
-                    # especially if we are in offline mode.
-                    
-                    db_vendors = db_session.query(Vendor).join(VendorNAICS).filter(
-                        Vendor.source == self.name,
-                        VendorNAICS.naics_code == naics_code
-                    )
-                    
-                    if state:
-                        db_vendors = db_vendors.filter(Vendor.state == state)
-                        
-                    for db_vendor in db_vendors.limit(100).all():
-                        # Convert DB vendor to VendorRecord
-                        # We need a helper for this since _entity_to_vendor_record expects raw API JSON
-                        # But we saved metadata_json, so we can use that OR map directly from DB fields
-                        
-                        # Mapping from DB fields is safer if metadata_json is missing (e.g. from CSV)
-                        
-                        contact = db_vendor.contacts[0] if db_vendor.contacts else None
-                        primary_contact = None
-                        if contact:
-                            primary_contact = ContactInfo(
-                                name=f"{contact.first_name or ''} {contact.last_name or ''}".strip(),
-                                email=contact.email,
-                                phone=contact.phone,
-                                organization=db_vendor.legal_name
-                            )
-
-                        rec = VendorRecord(
-                            company_name=db_vendor.legal_name,
-                            website=db_vendor.website,
-                            email=primary_contact.email if primary_contact else None,
-                            phone=primary_contact.phone if primary_contact else None,
-                            location=f"{db_vendor.city}, {db_vendor.state}" if db_vendor.city and db_vendor.state else db_vendor.state,
-                            city=db_vendor.city,
-                            state=db_vendor.state,
-                            country=db_vendor.country,
-                            industry=None, # Could derive from NAICS
-                            source=self.name,
-                            is_past_winner=False,
-                            enrichment_flags=["sam_registered"],
-                            uei=db_vendor.uei,
-                            duns=db_vendor.duns,
-                            cage_code=db_vendor.cage_code,
-                            business_types=db_vendor.business_types if isinstance(db_vendor.business_types, list) else [],
-                            primary_contact=primary_contact,
-                            total_contract_value=db_vendor.total_contract_value,
-                            contract_count=db_vendor.contract_count,
-                        )
-                        
-                        # Avoid duplicates if we already got it from API in this run
-                        if not any(v.company_name == rec.company_name for v in vendors):
-                            vendors.append(rec)
+                            raise Exception(f"SAM API unavailable for NAICS {naics_code}: {e}")
+                    else:
+                        raise Exception(f"SAM API key not configured - cannot search for NAICS {naics_code}")
                     
                     time.sleep(0.2)
                     
@@ -468,7 +442,7 @@ class SamEntitySource(BaseVendorSource):
                     print(f"Error searching SAM for NAICS {naics_code}: {e}")
                     continue
         
-        return vendors[:100]
+        return vendors
 
     def _score_and_sort_by_distance(
         self,

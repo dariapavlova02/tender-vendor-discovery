@@ -3,8 +3,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 import logging
+import csv
 
-import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ class CanadaContractsLoader:
         self.gsin_cache = {}
         self.unspsc_cache = {}
         self.contact_cache = {}
+        self.created_vendors = {}
         self.stats = {
             "rows_processed": 0,
             "vendors_created": 0,
@@ -35,54 +36,102 @@ class CanadaContractsLoader:
     def load_csv(self, csv_path: Path, source_name: str = "canada_contracts") -> dict:
         logger.info(f"Loading Canada contracts from {csv_path}")
         
-        for chunk in pd.read_csv(
-            csv_path,
-            chunksize=self.CHUNK_SIZE,
-            low_memory=False,
-            encoding="utf-8-sig",
-            on_bad_lines="skip",
-            encoding_errors="ignore"
-        ):
-            self._process_chunk(chunk, source_name)
-            self.session.commit()
-            
-            logger.info(
-                f"Processed {self.stats['rows_processed']} rows, "
-                f"{self.stats['vendors_created']} vendors created, "
-                f"{self.stats['vendors_updated']} updated"
-            )
+        try:
+            with open(csv_path, 'r', encoding='utf-8-sig', newline='') as f:
+                reader = csv.DictReader(f)
+                
+                chunk = []
+                chunk_num = 0
+                
+                for row in reader:
+                    chunk.append(row)
+                    
+                    if len(chunk) >= self.CHUNK_SIZE:
+                        chunk_num += 1
+                        try:
+                            logger.info(f"Processing chunk {chunk_num} ({len(chunk)} rows)...")
+                            self._process_chunk(chunk, source_name)
+                            
+                            logger.info(
+                                f"Chunk {chunk_num} complete. Total: {self.stats['rows_processed']} rows, "
+                                f"{self.stats['vendors_created']} vendors created, "
+                                f"{self.stats['vendors_updated']} updated"
+                            )
+                        except Exception as e:
+                            logger.error(f"Error processing chunk {chunk_num}: {e}")
+                            self.session.rollback()
+                        
+                        chunk = []
+                
+                if chunk:
+                    chunk_num += 1
+                    try:
+                        logger.info(f"Processing final chunk {chunk_num} ({len(chunk)} rows)...")
+                        self._process_chunk(chunk, source_name)
+                        logger.info(
+                            f"Chunk {chunk_num} complete. Total: {self.stats['rows_processed']} rows, "
+                            f"{self.stats['vendors_created']} vendors created, "
+                            f"{self.stats['vendors_updated']} updated"
+                        )
+                    except Exception as e:
+                        logger.error(f"Error processing final chunk {chunk_num}: {e}")
+                        self.session.rollback()
+                        
+        except Exception as e:
+            logger.error(f"Failed to open CSV: {e}")
+            raise
         
         logger.info(f"Completed loading: {self.stats}")
         return self.stats
     
-    def _process_chunk(self, chunk: pd.DataFrame, source_name: str):
+    def _process_chunk(self, chunk: list, source_name: str):
         vendor_aggregates = self._aggregate_by_vendor(chunk)
+        
+        if not vendor_aggregates:
+            return
+        
+        # Batch load existing vendors to avoid N+1 queries
+        external_ids = [f"{vd['legal_name']}_{vd['postal_code'] or 'NO_POSTAL'}" 
+                       for vd in vendor_aggregates.values()]
+        
+        stmt = select(Vendor).where(
+            Vendor.source == source_name,
+            Vendor.external_id.in_(external_ids)
+        )
+        existing_vendors = {v.external_id: v for v in self.session.execute(stmt).scalars()}
         
         # Process all vendors and relationships
         for vendor_key, vendor_data in vendor_aggregates.items():
-            self._upsert_vendor(vendor_data, source_name)
+            external_id = f"{vendor_data['legal_name']}_{vendor_data['postal_code'] or 'NO_POSTAL'}"
+            existing_vendor = existing_vendors.get(external_id) or self.created_vendors.get(external_id)
+            
+            self._upsert_vendor(vendor_data, source_name, external_id, existing_vendor)
             self.stats["rows_processed"] += len(vendor_data["contracts"])
         
-        # Flush once at the end of chunk to ensure all IDs are available
-        self.session.flush()
+        # Clear caches to prevent memory leak
+        self.gsin_cache.clear()
+        self.unspsc_cache.clear()
+        self.contact_cache.clear()
+        
+        # Single commit per chunk
+        self.session.commit()
     
-    def _aggregate_by_vendor(self, chunk: pd.DataFrame) -> dict:
+    def _aggregate_by_vendor(self, chunk: list) -> dict:
         aggregates = {}
         
-        for _, row in chunk.iterrows():
+        for row in chunk:
             legal_name = self._clean_string(row.get("supplierLegalName-nomLegalFournisseur-eng"))
             standardized_name = self._clean_string(row.get("supplierStandardizedName-nomNormaliseFournisseur-eng"))
-            postal_code = self._clean_string(row.get("supplierAddressPostalCode-fournisseurAdresseCodePostal"))
+            postal_code = self._normalize_postal_code(row.get("supplierAddressPostalCode-fournisseurAdresseCodePostal"))
             
-            if not standardized_name and not legal_name:
+            if not legal_name:
                 continue
             
-            vendor_name = standardized_name or legal_name
-            vendor_key = f"{vendor_name}|{postal_code or 'NO_POSTAL'}"
+            vendor_key = f"{legal_name}|{postal_code or 'NO_POSTAL'}"
             
             if vendor_key not in aggregates:
                 aggregates[vendor_key] = {
-                    "legal_name": legal_name or standardized_name,
+                    "legal_name": legal_name,
                     "standardized_name": standardized_name,
                     "address": self._clean_string(row.get("supplierAddressLine-ligneAdresseFournisseur-eng")),
                     "city": self._clean_string(row.get("supplierAddressCity-fournisseurAdresseVille-eng")),
@@ -122,16 +171,7 @@ class CanadaContractsLoader:
         
         return aggregates
     
-    def _upsert_vendor(self, vendor_data: dict, source_name: str):
-        vendor_name = vendor_data['standardized_name'] or vendor_data['legal_name']
-        external_id = f"{vendor_name}_{vendor_data['postal_code'] or 'NO_POSTAL'}"
-        
-        stmt = select(Vendor).where(
-            Vendor.source == source_name,
-            Vendor.external_id == external_id
-        )
-        vendor = self.session.execute(stmt).scalar_one_or_none()
-        
+    def _upsert_vendor(self, vendor_data: dict, source_name: str, external_id: str, vendor: Optional[Vendor]):
         contracts = vendor_data["contracts"]
         contract_values = [c["value"] for c in contracts if c["value"] is not None]
         contract_dates = [c["date"] for c in contracts if c["date"] is not None]
@@ -186,64 +226,78 @@ class CanadaContractsLoader:
                 ],
             )
             self.session.add(vendor)
-            # Flush immediately for new vendors so we can get vendor.id
             self.session.flush()
+            self.created_vendors[external_id] = vendor
             self.stats["vendors_created"] += 1
         
-        for gsin_code in vendor_data["gsin_codes"]:
-            self._add_gsin(vendor, gsin_code)
+        if vendor_data["gsin_codes"]:
+            self._batch_add_gsin(vendor, vendor_data["gsin_codes"])
         
-        for unspsc_code in vendor_data["unspsc_codes"]:
-            self._add_unspsc(vendor, unspsc_code)
+        if vendor_data["unspsc_codes"]:
+            self._batch_add_unspsc(vendor, vendor_data["unspsc_codes"])
         
         if vendor_data.get("contact_email") or vendor_data.get("contact_phone"):
             self._add_contact(vendor, vendor_data, source_name)
     
-    def _add_gsin(self, vendor: Vendor, gsin_code: str):
-        cache_key = f"{vendor.id}:{gsin_code}"
+    def _batch_add_gsin(self, vendor: Vendor, gsin_codes: set):
+        codes_to_check = []
+        for code in gsin_codes:
+            cache_key = f"{vendor.id}:{code}"
+            if cache_key not in self.gsin_cache:
+                codes_to_check.append(code)
+                self.gsin_cache[cache_key] = True
         
-        if cache_key in self.gsin_cache:
+        if not codes_to_check:
             return
         
-        stmt = select(VendorGSIN).where(
+        stmt = select(VendorGSIN.gsin_code).where(
             VendorGSIN.vendor_id == vendor.id,
-            VendorGSIN.gsin_code == gsin_code
+            VendorGSIN.gsin_code.in_(codes_to_check)
         )
-        existing = self.session.execute(stmt).scalar_one_or_none()
+        existing_codes = {row[0] for row in self.session.execute(stmt)}
         
-        if not existing:
-            vendor_gsin = VendorGSIN(
-                vendor_id=vendor.id,
-                gsin_code=gsin_code,
-                is_primary=False,
-            )
-            self.session.add(vendor_gsin)
-            self.stats["gsin_codes_added"] += 1
+        new_gsins = []
+        for code in codes_to_check:
+            if code not in existing_codes:
+                new_gsins.append(VendorGSIN(
+                    vendor_id=vendor.id,
+                    gsin_code=code,
+                    is_primary=False,
+                ))
         
-        self.gsin_cache[cache_key] = True
+        if new_gsins:
+            self.session.add_all(new_gsins)
+            self.stats["gsin_codes_added"] += len(new_gsins)
     
-    def _add_unspsc(self, vendor: Vendor, unspsc_code: str):
-        cache_key = f"{vendor.id}:{unspsc_code}"
+    def _batch_add_unspsc(self, vendor: Vendor, unspsc_codes: set):
+        codes_to_check = []
+        for code in unspsc_codes:
+            cache_key = f"{vendor.id}:{code}"
+            if cache_key not in self.unspsc_cache:
+                codes_to_check.append(code)
+                self.unspsc_cache[cache_key] = True
         
-        if cache_key in self.unspsc_cache:
+        if not codes_to_check:
             return
         
-        stmt = select(VendorUNSPSC).where(
+        stmt = select(VendorUNSPSC.unspsc_code).where(
             VendorUNSPSC.vendor_id == vendor.id,
-            VendorUNSPSC.unspsc_code == unspsc_code
+            VendorUNSPSC.unspsc_code.in_(codes_to_check)
         )
-        existing = self.session.execute(stmt).scalar_one_or_none()
+        existing_codes = {row[0] for row in self.session.execute(stmt)}
         
-        if not existing:
-            vendor_unspsc = VendorUNSPSC(
-                vendor_id=vendor.id,
-                unspsc_code=unspsc_code,
-                is_primary=False,
-            )
-            self.session.add(vendor_unspsc)
-            self.stats["unspsc_codes_added"] += 1
+        new_unspsc = []
+        for code in codes_to_check:
+            if code not in existing_codes:
+                new_unspsc.append(VendorUNSPSC(
+                    vendor_id=vendor.id,
+                    unspsc_code=code,
+                    is_primary=False,
+                ))
         
-        self.unspsc_cache[cache_key] = True
+        if new_unspsc:
+            self.session.add_all(new_unspsc)
+            self.stats["unspsc_codes_added"] += len(new_unspsc)
     
     def _add_contact(self, vendor: Vendor, vendor_data: dict, source_name: str):
         email = vendor_data.get("contact_email")
@@ -283,13 +337,13 @@ class CanadaContractsLoader:
     
     @staticmethod
     def _clean_string(value) -> Optional[str]:
-        if pd.isna(value) or value == "":
+        if value is None or value == "" or (isinstance(value, float) and value != value):
             return None
         return str(value).strip()
     
     @staticmethod
     def _parse_decimal(value) -> Optional[Decimal]:
-        if pd.isna(value):
+        if value is None or value == "" or (isinstance(value, float) and value != value):
             return None
         try:
             return Decimal(str(value))
@@ -298,12 +352,22 @@ class CanadaContractsLoader:
     
     @staticmethod
     def _parse_date(value) -> Optional[date]:
-        if pd.isna(value):
+        if value is None or value == "" or (isinstance(value, float) and value != value):
             return None
         try:
-            return pd.to_datetime(value).date()
+            from datetime import datetime as dt
+            value_str = str(value)
+            return dt.strptime(value_str[:10], '%Y-%m-%d').date()
         except:
             return None
+    
+    @staticmethod
+    def _normalize_postal_code(value) -> Optional[str]:
+        """Normalize postal code: remove spaces, uppercase, first 6 chars."""
+        if value is None or value == "" or (isinstance(value, float) and value != value):
+            return None
+        cleaned = str(value).strip().replace(' ', '').upper()
+        return cleaned[:6] if cleaned else None
 
 
 def load_canada_contracts(session: Session, csv_path: str) -> dict:

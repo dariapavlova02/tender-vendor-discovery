@@ -44,9 +44,10 @@ def render_config_sidebar() -> RuntimeConfig:
     with st.sidebar:
         st.header("⚙️ Configuration")
         
+        st.subheader("🤖 LLM Settings")
         model = st.selectbox(
             "LLM Model",
-            ["gpt-5-mini", "gpt-5.1", "gpt-4o-mini"],
+            ["gpt-5-mini", "gpt-5.1"],
             index=0,
             help="Select model for extraction and profiling"
         )
@@ -57,6 +58,15 @@ def render_config_sidebar() -> RuntimeConfig:
             help="Enable OpenAI Flex tier pricing"
         )
         
+        st.divider()
+        
+        st.subheader("🔧 Processing Mode")
+        manual_review = st.checkbox(
+            "Enable Manual Review",
+            value=False,
+            help="Allow editing extraction results before filtering"
+        )
+        
         auto_ingest = st.checkbox(
             "Auto Ingestion",
             value=False,
@@ -64,14 +74,77 @@ def render_config_sidebar() -> RuntimeConfig:
         )
         
         st.divider()
-        st.caption("OpenAI API Key")
-        api_key_status = "✅ Set" if RuntimeConfig().openai_api_key else "❌ Missing"
-        st.info(api_key_status)
         
+        st.subheader("🗺️ Geographic Settings")
+        geo_mode = st.selectbox(
+            "Geographic Scope",
+            ["local_only", "local_plus_regional", "national", "custom_radius"],
+            index=1,
+            help="Control geographic filtering scope"
+        )
+        
+        if geo_mode == "custom_radius":
+            search_radius = st.slider(
+                "Search Radius (km)",
+                min_value=50,
+                max_value=500,
+                value=200,
+                step=50,
+                help="Maximum distance for vendor search"
+            )
+        else:
+            search_radius = 200
+        
+        st.divider()
+        
+        st.subheader("📊 Results Settings")
+        max_results = st.slider(
+            "Max Vendors to Return",
+            min_value=50,
+            max_value=1000,
+            value=500,
+            step=50,
+            help="Maximum number of vendor candidates after filtering"
+        )
+        
+        st.divider()
+        
+        st.subheader("💎 Enrichment Settings")
+        enable_google_maps = st.checkbox(
+            "Enable Google Maps Enrichment",
+            value=True,
+            help="Enrich vendor contacts via Google Maps API"
+        )
+        
+        enable_apollo = st.checkbox(
+            "Enable Apollo Enrichment",
+            value=True,
+            help="Enrich vendor contacts via Apollo API"
+        )
+        
+        auto_enrich_missing = st.checkbox(
+            "Auto-Enrich Missing Contacts",
+            value=False,
+            help="Automatically enrich vendors without contact info"
+        )
+        
+        st.divider()
+        st.caption("🔑 API Keys Status")
         config = RuntimeConfig()
+        st.text(f"OpenAI: {'✅' if config.openai_api_key else '❌'}")
+        st.text(f"Google Maps: {'✅' if config.google_maps_api_key else '❌'}")
+        st.text(f"Apollo: {'✅' if config.apollo_api_key else '❌'}")
+        
         config.llm.cheap_model = model
         config.llm.use_flex_tier = use_flex
         config.enable_auto_ingestion = auto_ingest
+        config.enable_manual_review = manual_review
+        config.filtering.max_candidates = max_results
+        config.filtering.geographic_mode = geo_mode
+        config.filtering.geographic_search_radius_km = search_radius
+        config.enrichment.enable_google_maps = enable_google_maps
+        config.enrichment.enable_apollo_enrichment = enable_apollo
+        config.enrichment.auto_enrich_on_missing = auto_enrich_missing
         
         return config
 
@@ -216,7 +289,7 @@ def render_extraction_tab(artifacts: PipelineArtifacts):
     
     structured = artifacts.tender_profile.doc_extracted.structured
     
-    tab1, tab2, tab3 = st.tabs(["📋 Basic Info", "📦 Requirements", "🔢 Raw JSON"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Basic Info", "📦 Requirements", "✏️ Edit Extraction", "🔢 Raw JSON"])
     
     with tab1:
         col1, col2 = st.columns(2)
@@ -276,8 +349,50 @@ def render_extraction_tab(artifacts: PipelineArtifacts):
             st.info("No licenses specified")
     
     with tab3:
+        render_extraction_editor(artifacts)
+    
+    with tab4:
         structured_dict = _dataclass_to_dict(structured)
         st.json(structured_dict)
+
+
+def render_extraction_editor(artifacts: PipelineArtifacts):
+    st.markdown("### ✏️ Edit Extracted Data")
+    st.info("Modify extracted values before proceeding with vendor search")
+    
+    structured = artifacts.tender_profile.doc_extracted.structured
+    
+    with st.form("extraction_editor"):
+        st.markdown("**📍 Location**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            city = st.text_input("City", value=structured.location.city or "")
+        with col2:
+            state = st.text_input("State/Province", value=structured.location.state_province or "")
+        with col3:
+            country = st.text_input("Country", value=structured.location.country or "")
+        
+        st.divider()
+        
+        st.markdown("**🏷️ NAICS Codes**")
+        naics_str = ", ".join(structured.naics_codes or [])
+        naics_input = st.text_area(
+            "NAICS Codes (comma-separated)",
+            value=naics_str,
+            help="Enter NAICS codes separated by commas"
+        )
+        
+        
+        submit_button = st.form_submit_button("💾 Save Changes & Re-run Pipeline")
+        
+        if submit_button:
+            st.success("Changes saved! Click 'Run Pipeline' again to apply changes.")
+            st.session_state['edited_extraction'] = {
+                'city': city,
+                'state': state,
+                'country': country,
+                'naics_codes': [n.strip() for n in naics_input.split(',') if n.strip()]
+            }
 
 
 def render_documents_tab(artifacts: PipelineArtifacts):
@@ -335,10 +450,22 @@ def render_documents_tab(artifacts: PipelineArtifacts):
         st.info(f"Showing first 50 of {len(filtered_sections)} sections")
 
 
+def get_contact_status_icon(vendor):
+    has_email = bool(vendor.email)
+    has_phone = bool(vendor.phone)
+    
+    if has_email and has_phone:
+        return "✅"
+    elif has_email or has_phone:
+        return "⚠️"
+    else:
+        return "❌"
+
+
 def render_vendors_tab(artifacts: PipelineArtifacts):
     st.subheader("🏢 Vendor Discovery & Matching")
     
-    tab1, tab2, tab3 = st.tabs(["🎯 Final Matches", "🔍 All Discovered", "📊 Stats"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🎯 Final Matches", "🔍 All Discovered", "💎 Manual Enrichment", "📊 Stats"])
     
     with tab1:
         if not artifacts.final_matches:
@@ -350,12 +477,14 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
         match_data = []
         for match in artifacts.final_matches[:100]:
             match_data.append({
+                "Contacts": get_contact_status_icon(match.vendor),
                 "Company": match.vendor.company_name,
                 "Score": f"{match.capability_match_score:.2f}",
                 "Location": match.vendor.location or "N/A",
                 "Industry": match.vendor.industry or "N/A",
                 "Website": match.vendor.website or "N/A",
                 "Email": match.vendor.email or "N/A",
+                "Phone": match.vendor.phone or "N/A",
                 "Source": match.vendor.source or "N/A",
                 "Past Winner": "✅" if match.vendor.is_past_winner else "❌"
             })
@@ -363,6 +492,14 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
         if pd:
             df = pd.DataFrame(match_data)
             st.dataframe(df, width="stretch", hide_index=True)
+            
+            csv_data = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Results as CSV",
+                data=csv_data,
+                file_name="vendor_matches.csv",
+                mime="text/csv"
+            )
         else:
             st.json(match_data)
         
@@ -387,10 +524,13 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
         vendor_data = []
         for vendor in artifacts.enriched_vendors[:100]:
             vendor_data.append({
+                "Contacts": get_contact_status_icon(vendor),
                 "Company": vendor.company_name,
                 "Location": vendor.location or "N/A",
                 "Industry": vendor.industry or "N/A",
                 "Website": vendor.website or "N/A",
+                "Email": vendor.email or "N/A",
+                "Phone": vendor.phone or "N/A",
                 "Source": vendor.source or "N/A"
             })
         
@@ -401,6 +541,9 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
             st.json(vendor_data)
     
     with tab3:
+        render_manual_enrichment_tab(artifacts)
+    
+    with tab4:
         col1, col2 = st.columns(2)
         
         with col1:
@@ -415,6 +558,195 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
                 
                 past_winners = sum(1 for m in artifacts.final_matches if m.vendor.is_past_winner)
                 st.metric("Past Winners", past_winners)
+                
+                vendors_with_matches = [m.vendor for m in artifacts.final_matches]
+                missing_contacts = sum(
+                    1 for v in vendors_with_matches 
+                    if not v.email and not v.phone
+                )
+                st.metric("Missing Contacts", missing_contacts)
+
+
+def render_manual_enrichment_tab(artifacts: PipelineArtifacts):
+    st.markdown("### 💎 Manual Vendor Enrichment")
+    st.info("Manually enrich vendors without contact information using Google Maps or Apollo")
+    
+    if not artifacts.final_matches:
+        st.warning("No vendors to enrich yet. Run pipeline first.")
+        return
+    
+    from vendor_ai_agent.modules.manual_enrichment import ManualEnrichmentService
+    
+    config = st.session_state.get('config')
+    if not config:
+        st.error("Configuration not available. Please run pipeline first.")
+        return
+    
+    enrichment_service = ManualEnrichmentService(
+        google_maps_api_key=config.google_maps_api_key,
+        apollo_api_key=config.apollo_api_key
+    )
+    
+    vendors = [m.vendor for m in artifacts.final_matches]
+    vendors_missing = [v for v in vendors if not v.email and not v.phone]
+    vendors_partial = [v for v in vendors if (v.email or v.phone) and not (v.email and v.phone)]
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Vendors", len(vendors))
+    with col2:
+        st.metric("Missing Contacts", len(vendors_missing))
+    with col3:
+        st.metric("Partial Contacts", len(vendors_partial))
+    
+    st.divider()
+    
+    filter_option = st.selectbox(
+        "Filter Vendors",
+        ["All Vendors", "Missing Contacts Only", "Partial Contacts Only"],
+        index=1
+    )
+    
+    if filter_option == "Missing Contacts Only":
+        display_vendors = vendors_missing
+    elif filter_option == "Partial Contacts Only":
+        display_vendors = vendors_partial
+    else:
+        display_vendors = vendors
+    
+    if not display_vendors:
+        st.success("✅ All vendors have complete contact information!")
+        return
+    
+    st.markdown(f"**Showing {len(display_vendors)} vendors**")
+    
+    col_batch1, col_batch2 = st.columns(2)
+    with col_batch1:
+        if st.button("🗺️ Batch Enrich via Google Maps", type="primary"):
+            if not config.google_maps_api_key:
+                st.error("❌ Google Maps API key not configured")
+            else:
+                with st.spinner(f"Enriching {len(display_vendors)} vendors via Google Maps..."):
+                    progress_bar = st.progress(0)
+                    enriched_count = 0
+                    
+                    for idx, vendor in enumerate(display_vendors):
+                        enriched = enrichment_service.enrich_single_vendor_google_maps(vendor)
+                        if enriched.email or enriched.phone:
+                            enriched_count += 1
+                            for match in artifacts.final_matches:
+                                if match.vendor.company_name == vendor.company_name:
+                                    match.vendor.email = enriched.email or match.vendor.email
+                                    match.vendor.phone = enriched.phone or match.vendor.phone
+                        
+                        progress_bar.progress((idx + 1) / len(display_vendors))
+                    
+                    st.success(f"✅ Enriched {enriched_count} out of {len(display_vendors)} vendors")
+                    st.rerun()
+    
+    with col_batch2:
+        if st.button("🚀 Batch Enrich via Apollo", type="primary"):
+            if not config.apollo_api_key:
+                st.error("❌ Apollo API key not configured")
+            else:
+                with st.spinner(f"Enriching {len(display_vendors)} vendors via Apollo..."):
+                    progress_bar = st.progress(0)
+                    enriched_count = 0
+                    
+                    for idx, vendor in enumerate(display_vendors):
+                        enriched = enrichment_service.enrich_single_vendor_apollo(vendor)
+                        if enriched.email or enriched.phone:
+                            enriched_count += 1
+                            for match in artifacts.final_matches:
+                                if match.vendor.company_name == vendor.company_name:
+                                    match.vendor.email = enriched.email or match.vendor.email
+                                    match.vendor.phone = enriched.phone or match.vendor.phone
+                        
+                        progress_bar.progress((idx + 1) / len(display_vendors))
+                    
+                    st.success(f"✅ Enriched {enriched_count} out of {len(display_vendors)} vendors")
+                    st.rerun()
+    
+    st.divider()
+    
+    for idx, vendor in enumerate(display_vendors[:20]):
+        with st.expander(
+            f"{get_contact_status_icon(vendor)} {vendor.company_name} - "
+            f"Email: {'✓' if vendor.email else '✗'} | Phone: {'✓' if vendor.phone else '✗'}",
+            expanded=False
+        ):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Company Info**")
+                st.text(f"Name: {vendor.company_name}")
+                st.text(f"Location: {vendor.location or 'N/A'}")
+                st.text(f"Website: {vendor.website or 'N/A'}")
+                st.text(f"Industry: {vendor.industry or 'N/A'}")
+            
+            with col2:
+                st.markdown("**Current Contacts**")
+                st.text(f"Email: {vendor.email or 'Missing'}")
+                st.text(f"Phone: {vendor.phone or 'Missing'}")
+            
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            
+            with col_btn1:
+                if st.button(f"🗺️ Google Maps", key=f"gmaps_{idx}"):
+                    if not config.google_maps_api_key:
+                        st.error("❌ Google Maps API key not configured")
+                    else:
+                        with st.spinner(f"Enriching {vendor.company_name}..."):
+                            enriched = enrichment_service.enrich_single_vendor_google_maps(vendor)
+                            if enriched.email or enriched.phone:
+                                for match in artifacts.final_matches:
+                                    if match.vendor.company_name == vendor.company_name:
+                                        match.vendor.email = enriched.email or match.vendor.email
+                                        match.vendor.phone = enriched.phone or match.vendor.phone
+                                st.success(f"✅ Enriched {vendor.company_name}")
+                                st.rerun()
+                            else:
+                                st.warning("⚠️ No additional contacts found")
+            
+            with col_btn2:
+                if st.button(f"🚀 Apollo", key=f"apollo_{idx}"):
+                    if not config.apollo_api_key:
+                        st.error("❌ Apollo API key not configured")
+                    else:
+                        with st.spinner(f"Enriching {vendor.company_name}..."):
+                            enriched = enrichment_service.enrich_single_vendor_apollo(vendor)
+                            if enriched.email or enriched.phone:
+                                for match in artifacts.final_matches:
+                                    if match.vendor.company_name == vendor.company_name:
+                                        match.vendor.email = enriched.email or match.vendor.email
+                                        match.vendor.phone = enriched.phone or match.vendor.phone
+                                st.success(f"✅ Enriched {vendor.company_name}")
+                                st.rerun()
+                            else:
+                                st.warning("⚠️ No additional contacts found")
+            
+            with col_btn3:
+                if st.button(f"✏️ Manual Entry", key=f"manual_{idx}"):
+                    st.session_state[f'show_manual_form_{idx}'] = True
+            
+            if st.session_state.get(f'show_manual_form_{idx}', False):
+                with st.form(f"manual_entry_{idx}"):
+                    st.markdown("**Enter Contact Information**")
+                    manual_email = st.text_input("Email", value=vendor.email or "")
+                    manual_phone = st.text_input("Phone", value=vendor.phone or "")
+                    
+                    if st.form_submit_button("💾 Save"):
+                        for match in artifacts.final_matches:
+                            if match.vendor.company_name == vendor.company_name:
+                                match.vendor.email = manual_email or match.vendor.email
+                                match.vendor.phone = manual_phone or match.vendor.phone
+                        
+                        st.success(f"✅ Contacts saved for {vendor.company_name}")
+                        st.session_state[f'show_manual_form_{idx}'] = False
+                        st.rerun()
+    
+    if len(display_vendors) > 20:
+        st.info(f"Showing first 20 of {len(display_vendors)} vendors")
 
 
 def render_debug_tab(artifacts: PipelineArtifacts):
@@ -449,6 +781,40 @@ def _dataclass_to_dict(obj):
                 result[key] = value
         return result
     return obj
+
+
+def apply_extraction_edits(profile):
+    edited_data = st.session_state.get('edited_extraction')
+    
+    if not edited_data:
+        return profile, []
+    
+    structured = profile.doc_extracted.structured
+    changes = []
+    
+    if edited_data.get('city') is not None and edited_data['city'] != structured.location.city:
+        old_val = structured.location.city or '(empty)'
+        structured.location.city = edited_data['city']
+        changes.append(f"📍 City: {old_val} → {edited_data['city']}")
+    
+    if edited_data.get('state') is not None and edited_data['state'] != structured.location.state_province:
+        old_val = structured.location.state_province or '(empty)'
+        structured.location.state_province = edited_data['state']
+        changes.append(f"📍 State: {old_val} → {edited_data['state']}")
+    
+    if edited_data.get('country') is not None and edited_data['country'] != structured.location.country:
+        old_val = structured.location.country or '(empty)'
+        structured.location.country = edited_data['country']
+        changes.append(f"📍 Country: {old_val} → {edited_data['country']}")
+    
+    if edited_data.get('naics_codes') is not None:
+        old_codes = set(structured.naics_codes or [])
+        new_codes = set(edited_data['naics_codes'])
+        if old_codes != new_codes:
+            structured.naics_codes = edited_data['naics_codes']
+            changes.append(f"🏷️ NAICS: {', '.join(old_codes or ['(empty)'])} → {', '.join(new_codes)}")
+    
+    return profile, changes
 
 
 def main():
@@ -511,12 +877,59 @@ def main():
         status_text.text("🔍 Discovering & enriching vendors...")
         progress_bar.progress(70)
         
-        artifacts = pipeline.run(selected_files, disable_auto_ingestion=not config.enable_auto_ingestion)
+        try:
+            artifacts = pipeline.run(selected_files, disable_auto_ingestion=not config.enable_auto_ingestion)
+        except Exception as e:
+            progress_bar.empty()
+            status_text.empty()
+            st.error("🚨 **Vendor Discovery Failed - API Unavailable**")
+            st.error(f"**Error:** {str(e)}")
+            st.warning("**Please try again later.** The external vendor API (SAM.gov or SBA) is currently unavailable.")
+            st.stop()
+        
+        _, changes_applied = apply_extraction_edits(artifacts.tender_profile)
+        if changes_applied:
+            st.info("🔄 **Manual edits detected - re-running pipeline with updated extraction data:**")
+            for change in changes_applied:
+                st.markdown(f"  - {change}")
+            
+            status_text.text("🔍 Re-discovering & filtering vendors with updated data...")
+            progress_bar.progress(50)
+            
+            try:
+                discovered_vendors = pipeline.context.vendor_discovery.discover(artifacts.tender_profile)
+            except Exception as e:
+                progress_bar.empty()
+                status_text.empty()
+                st.error("🚨 **Vendor Discovery Failed - API Unavailable**")
+                st.error(f"**Error:** {str(e)}")
+                st.warning("**Please try again later.** The external vendor API (SAM.gov or SBA) is currently unavailable.")
+                st.stop()
+            filtered_vendors = pipeline.context.vendor_filter.filter(artifacts.tender_profile, discovered_vendors)
+            filtering_metrics = pipeline.context.vendor_filter.get_metrics()
+            enriched_vendors = pipeline.context.vendor_enricher.enrich(filtered_vendors)
+            matches = pipeline.context.capability_matcher.score(artifacts.tender_profile, enriched_vendors)
+            
+            from vendor_ai_agent.models import PipelineArtifacts as PA
+            artifacts = PA(
+                tender_sections=artifacts.tender_sections,
+                tender_profile=artifacts.tender_profile,
+                raw_vendors=discovered_vendors,
+                enriched_vendors=enriched_vendors,
+                filtered_vendors=filtered_vendors,
+                filtering_metrics=filtering_metrics,
+                final_matches=matches,
+            )
+            
+            st.session_state.pop('edited_extraction', None)
         
         progress_bar.progress(100)
         status_text.text("✅ Pipeline completed successfully!")
         
-        st.success("Pipeline execution completed!")
+        st.success("✅ Pipeline execution completed!")
+        
+        if config.enable_manual_review:
+            st.info("💡 Manual review mode enabled. Check the 'Extracted Data' tab to edit values before re-running.")
         
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📊 Overview",
@@ -542,6 +955,49 @@ def main():
             render_debug_tab(artifacts)
         
         st.session_state['artifacts'] = artifacts
+        st.session_state['config'] = config
+        
+        st.divider()
+        st.markdown("### 📤 Export Results")
+        
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            if st.button("💾 Save as Excel", type="secondary"):
+                try:
+                    from pathlib import Path
+                    output_dir = Path("outputs")
+                    output_dir.mkdir(exist_ok=True)
+                    pipeline.save_outputs(artifacts.final_matches, directory=output_dir)
+                    st.success("✅ Results saved to outputs/ directory")
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
+        
+        with col_exp2:
+            if st.button("📊 Generate Report", type="secondary"):
+                st.info("Report generation feature coming soon!")
+        
+        with col_exp3:
+            if pd and artifacts.final_matches:
+                match_data = []
+                for match in artifacts.final_matches:
+                    match_data.append({
+                        "Company": match.vendor.company_name,
+                        "Score": match.capability_match_score,
+                        "Email": match.vendor.email or "",
+                        "Phone": match.vendor.phone or "",
+                        "Website": match.vendor.website or "",
+                        "Location": match.vendor.location or "",
+                        "Rationale": match.rationale
+                    })
+                df = pd.DataFrame(match_data)
+                csv = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv,
+                    file_name="vendor_matches.csv",
+                    mime="text/csv"
+                )
         
     except Exception as exc:
         st.error(f"❌ Pipeline failed: {exc}")

@@ -188,6 +188,7 @@ class GeographicMatcher:
         profile: TenderProfile,
         vendors: list[VendorRecord],
         expansion_mode: bool = False,
+        sort_by_distance: bool = False,
     ) -> tuple[list[VendorRecord], int, int]:
         if not self.enable_local_first:
             for vendor in vendors:
@@ -225,7 +226,14 @@ class GeographicMatcher:
                 national_vendors.append(vendor)
                 vendor.filtering_metadata["geo_tier"] = "national"
 
-        if expansion_mode:
+        if sort_by_distance:
+            filtered = local_vendors + regional_vendors + national_vendors
+            logger.info(
+                f"Geographic sorting mode: {len(local_vendors)} local, "
+                f"{len(regional_vendors)} regional, {len(national_vendors)} national "
+                f"(all included, sorted by proximity)"
+            )
+        elif expansion_mode:
             filtered = local_vendors + regional_vendors + national_vendors
             logger.info(
                 f"Geographic expansion mode: {len(local_vendors)} local, "

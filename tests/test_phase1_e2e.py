@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 import json
 
-from vendor_ai_agent.config import RuntimeConfig, CapabilityMatchingConfig
+from vendor_ai_agent.config import RuntimeConfig, CapabilityMatchingConfig, EnrichmentConfig
 from vendor_ai_agent.pipeline import TenderVendorPipeline
 
 logging.basicConfig(
@@ -15,29 +15,62 @@ logger = logging.getLogger(__name__)
 
 
 def test_dhs_uniforms_stage5():
-    """Test Stage 5 with DHS Uniforms tender."""
+    """Test Stage 5 with DHS Uniforms tender - with full enrichment chain."""
     
     logger.info("=" * 80)
     logger.info("PHASE 1: END-TO-END TEST WITH DHS UNIFORMS TENDER")
     logger.info("=" * 80)
     
-    # Configure pipeline with Stage 5 enabled but limited scope for testing
+    # Configure pipeline with FULL ENRICHMENT CHAIN
     config = RuntimeConfig()
+    
+    # Stage 5: Capability Matching - NO LIMITS, continue until target reached
     config.capability_matching = CapabilityMatchingConfig(
         enable_llm_assessment=True,
-        max_llm_evaluations=10,  # Limit to 10 vendors for testing (save cost)
-        llm_model="gpt-4o-mini",  # Use actual model instead of gpt-5-mini
+        llm_model="gpt-5-mini",
         enable_website_scraping=True,
         scrape_timeout_seconds=10,
         max_content_chars=3000,
         fallback_to_rule_based=True,
     )
     
+    # Enrichment: Enable multi-level fallback chain
+    config.enrichment = EnrichmentConfig(
+        # Website discovery for vendors without URLs
+        enable_website_search=True,  # ← NEW: Search websites via DDG/Serper
+        enable_ddg_search=True,
+        enable_serper_fallback=True,
+        website_search_min_confidence=0.5,
+        
+        # Contact extraction with 3-level fallback
+        enable_contact_scraping=True,
+        enable_llm_fallback=True,
+        enable_targeted_serper_fallback=True,  # ← NEW: Serper for contacts
+        scraper_timeout_seconds=5,
+        
+        # Scoring thresholds
+        relevance_score_threshold=60.0,  # ← NEW: Lower threshold for SAM vendors (was 70)
+        
+        # Batch processing - NO BATCH LIMIT, continue until target reached
+        max_enrichment_workers=10,
+        batch_size=50,
+        min_batch_success_rate=0.15,
+        target_relevant_vendors=200,
+        enable_batch_quality_gates=True,
+        enable_sampling_fallback=True,
+        sample_positions=[150, 300],
+    )
+    
     logger.info(f"Configuration:")
     logger.info(f"  - LLM Assessment: {config.capability_matching.enable_llm_assessment}")
     logger.info(f"  - Website Scraping: {config.capability_matching.enable_website_scraping}")
-    logger.info(f"  - Max LLM Evaluations: {config.capability_matching.max_llm_evaluations}")
     logger.info(f"  - LLM Model: {config.capability_matching.llm_model}")
+    logger.info(f"  - Target Relevant Vendors: {config.enrichment.target_relevant_vendors}")
+    logger.info(f"\nEnrichment Chain:")
+    logger.info(f"  - Website Search (DDG/Serper): {config.enrichment.enable_website_search}")
+    logger.info(f"  - Contact Scraping (3-level): {config.enrichment.enable_contact_scraping}")
+    logger.info(f"  - Targeted Serper Fallback: {config.enrichment.enable_targeted_serper_fallback}")
+    logger.info(f"  - Relevance Threshold: {config.enrichment.relevance_score_threshold}")
     
     # Initialize pipeline
     start_time = time.time()

@@ -23,7 +23,11 @@ class VendorDiscovery(VendorDiscoveryContract):
             if hasattr(source, 'is_compatible') and not source.is_compatible(profile):
                 logger.info(f"Skipping {source.name} - incompatible with tender")
                 continue
-            vendors.extend(source.search(profile))
+            try:
+                vendors.extend(source.search(profile))
+            except Exception as e:
+                logger.error(f"Source {source.name} failed: {e}")
+                raise Exception(f"Vendor discovery failed - {source.name}: {e}")
         return vendors
 
     def register_source(self, source: VendorSource) -> None:

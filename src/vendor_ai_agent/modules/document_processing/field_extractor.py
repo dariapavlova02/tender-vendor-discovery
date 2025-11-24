@@ -56,7 +56,7 @@ class FieldExtractor:
 
     def extract(self, sections: DocSections, sections_list: Optional[List[TenderSection]] = None) -> StructuredDocData:
         structured = StructuredDocData()
-        structured.project_type = self._infer_project_type(sections.scope_of_work)
+        structured.project_type = self._infer_project_type(sections.scope_of_work)  # Fallback, overridden by LLM if available
         structured.sector = self._infer_sector(
             sections.scope_of_work, 
             sections.technical_requirements or None, 
@@ -75,6 +75,12 @@ class FieldExtractor:
         llm_requirements = self._extract_requirements_with_llm(sections)
         
         if llm_requirements:
+            if llm_requirements.get("project_summary"):
+                structured.project_type = llm_requirements.get("project_summary")
+                logging.info(f"LLM-extracted project_type: {structured.project_type}")
+            else:
+                logging.warning(f"LLM project_summary missing, using fallback: {structured.project_type}")
+            
             structured.required_experience = RequiredExperience(
                 min_years=llm_requirements.get("min_years"),
                 required_project_types=llm_requirements.get("required_project_types", [])
@@ -398,6 +404,7 @@ Rules:
 {combined_text}
 
 Extract:
+- project_summary: brief description of what this tender is for (1-2 phrases, e.g., "law enforcement uniform supply", "utility vehicle procurement")
 - min_years: minimum years of experience (integer or null)
 - required_project_types: list of project types/experience areas
 - licenses: required licenses (list of strings)
@@ -408,8 +415,9 @@ Extract:
 
 Return JSON:
 {{
+  "project_summary": "law enforcement ammunition supply and delivery",
   "min_years": 5,
-  "required_project_types": ["law enforcement ammunition supply"],
+  "required_project_types": ["tactical ammunition manufacturing", "law enforcement supply"],
   "licenses": ["ATF license"],
   "certifications": ["ISO 9001"],
   "allowed_jurisdictions": ["Canada"],

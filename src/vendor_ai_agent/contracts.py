@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, Optional, Protocol
+from typing import Callable, Iterable, List, Optional, Protocol
 
 from .models import FilteringMetrics, TenderProfile, TenderSection, VendorMatchResult, VendorRecord
 

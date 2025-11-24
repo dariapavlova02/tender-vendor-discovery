@@ -88,6 +88,18 @@ class TenderVendorPipeline:
         
         # Initialize enrichment providers
         enrichment_providers = []
+        
+        if cfg.enrichment.enable_website_search and cfg.serper_api_key:
+            from .enrichment_providers import HybridWebsiteEnricher
+            website_enricher = HybridWebsiteEnricher(
+                serper_api_key=cfg.serper_api_key,
+                enable_ddg=cfg.enrichment.enable_ddg_search,
+                enable_serper_fallback=cfg.enrichment.enable_serper_fallback,
+                min_confidence=cfg.enrichment.website_search_min_confidence
+            )
+            enrichment_providers.append(website_enricher)
+            logging.info("HybridWebsiteEnricher registered for website discovery")
+        
         if cfg.capability_matching.enable_website_scraping:
             from .modules.website_scraper import WebsiteScraper
             scraper = WebsiteScraper(
@@ -98,13 +110,37 @@ class TenderVendorPipeline:
             enrichment_providers.append(website_provider)
             logging.info("WebsiteContentProvider registered for enrichment")
         
+        if cfg.enrichment.enable_contact_scraping and cfg.serper_api_key:
+            from .enrichment_providers import ContactScrapingProvider, SerperClient
+            serper_client = SerperClient(api_key=cfg.serper_api_key)
+            contact_provider = ContactScrapingProvider(
+                llm_provider=llm_provider,
+                scraper_timeout=cfg.enrichment.scraper_timeout_seconds,
+                enable_llm_fallback=cfg.enrichment.enable_llm_fallback,
+                serper_client=serper_client,
+                enable_targeted_serper=cfg.enrichment.enable_targeted_serper_fallback
+            )
+            enrichment_providers.append(contact_provider)
+            logging.info("ContactScrapingProvider registered with 3-level fallback")
+        
         self.context = PipelineContext(
             config=cfg,
             document_parser=DocumentParser(),
             document_fetcher=DocumentFetcher(),
             requirement_extractor=RequirementExtractor(llm_provider=llm_provider),
             vendor_discovery=VendorDiscovery(sources=sources),
-            vendor_enricher=VendorEnricher(providers=enrichment_providers),
+            vendor_enricher=VendorEnricher(
+                providers=enrichment_providers,
+                max_workers=cfg.enrichment.max_enrichment_workers,
+                batch_size=cfg.enrichment.batch_size,
+                min_batch_success_rate=cfg.enrichment.min_batch_success_rate,
+                max_enrichment_batches=cfg.enrichment.max_enrichment_batches,
+                target_relevant_vendors=cfg.enrichment.target_relevant_vendors,
+                enable_batch_quality_gates=cfg.enrichment.enable_batch_quality_gates,
+                enable_sampling_fallback=cfg.enrichment.enable_sampling_fallback,
+                sample_positions=cfg.enrichment.sample_positions,
+                relevance_score_threshold=cfg.enrichment.relevance_score_threshold
+            ),
             vendor_filter=VendorFilter(config=cfg.filtering),
             capability_matcher=CapabilityMatcher(llm_provider=llm_provider, config=cfg.capability_matching),
             output_generator=OutputGenerator(),
@@ -137,11 +173,28 @@ class TenderVendorPipeline:
             tender_profile, sections = self._hydrate_from_ingestion(
                 request_to_use, file_list, auto_generated=auto_generated
             )
-        discovered_vendors = self.context.vendor_discovery.discover(tender_profile)
-        enriched_vendors = self.context.vendor_enricher.enrich(discovered_vendors)
-        filtered_vendors = self.context.vendor_filter.filter(tender_profile, enriched_vendors)
+        
+        try:
+            discovered_vendors = self.context.vendor_discovery.discover(tender_profile)
+        except Exception as e:
+            raise Exception(f"Vendor discovery failed: {e}")
+        
+        filtered_vendors = self.context.vendor_filter.filter(tender_profile, discovered_vendors)
         filtering_metrics = self.context.vendor_filter.get_metrics()
-        matches = self.context.capability_matcher.score(tender_profile, filtered_vendors)
+        
+        if hasattr(self.context.vendor_enricher, 'enrich_with_scoring'):
+            enriched_vendors, relevant_matches = self.context.vendor_enricher.enrich_with_scoring(
+                profile=tender_profile,
+                vendors=filtered_vendors,
+                scoring_fn=self.context.capability_matcher.score
+            )
+            matches = relevant_matches if relevant_matches else self.context.capability_matcher.score(
+                tender_profile, enriched_vendors
+            )
+        else:
+            enriched_vendors = self.context.vendor_enricher.enrich(filtered_vendors)
+            matches = self.context.capability_matcher.score(tender_profile, enriched_vendors)
+        
         return PipelineArtifacts(
             tender_sections=sections,
             tender_profile=tender_profile,
