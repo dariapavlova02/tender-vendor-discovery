@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
 from typing import List, Optional
 from urllib.parse import urlparse
 
+import httpx
 import requests
 
 
@@ -77,6 +79,46 @@ class SerperClient:
             
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Serper API error: {e}")
+            return SerperResult()
+    
+    async def search_company_async(
+        self,
+        company_name: str,
+        include_contacts: bool = True,
+        query: Optional[str] = None,
+    ) -> SerperResult:
+        if query is None:
+            if include_contacts:
+                query = f"{company_name} official website contact email phone"
+            else:
+                query = f"{company_name} official website"
+        
+        self.logger.debug(f"Serper query (async): {query}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.base_url,
+                    headers={
+                        "X-API-KEY": self.api_key,
+                        "Content-Type": "application/json"
+                    },
+                    json={"q": query, "num": 5}
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                website = self._extract_website(data, company_name)
+                contacts = self._extract_contacts(data) if include_contacts else None
+                
+                return SerperResult(
+                    website=website,
+                    contacts=contacts,
+                    raw_response=data
+                )
+                
+        except (httpx.HTTPError, Exception) as e:
+            self.logger.error(f"Serper API error (async): {e}")
             return SerperResult()
     
     def _extract_website(self, data: dict, company_name: str) -> Optional[str]:

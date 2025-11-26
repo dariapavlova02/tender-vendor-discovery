@@ -162,11 +162,10 @@ class AsyncWebsiteScraper:
         self.max_concurrent_per_domain = max_concurrent_per_domain
         self.logger = logging.getLogger(__name__)
         
-        self.global_semaphore = asyncio.Semaphore(max_concurrent_global)
-        self._domain_semaphores: Dict[str, asyncio.Semaphore] = defaultdict(
-            lambda: asyncio.Semaphore(max_concurrent_per_domain)
-        )
-        self._domain_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._global_semaphore: Optional[asyncio.Semaphore] = None
+        self._domain_semaphores: Dict[str, asyncio.Semaphore] = {}
+        self._domain_locks: Dict[str, asyncio.Lock] = {}
+        self._init_lock: Optional[asyncio.Lock] = None
         
         self.cache: Optional[WebsiteCache] = None
         if enable_cache:
@@ -178,6 +177,31 @@ class AsyncWebsiteScraper:
         headers = self.BROWSER_HEADERS.copy()
         headers["User-Agent"] = random.choice(self.USER_AGENTS)
         return headers
+    
+    async def _ensure_semaphores(self) -> asyncio.Semaphore:
+        """Lazy initialization of semaphores in the current event loop."""
+        if self._global_semaphore is None:
+            if self._init_lock is None:
+                self._init_lock = asyncio.Lock()
+            
+            async with self._init_lock:
+                if self._global_semaphore is None:
+                    self._global_semaphore = asyncio.Semaphore(self.max_concurrent_global)
+                    self.logger.debug("Initialized global semaphore in current event loop")
+        
+        return self._global_semaphore
+    
+    async def _get_domain_semaphore(self, domain: str) -> asyncio.Semaphore:
+        """Get or create semaphore for a domain in the current event loop."""
+        if domain not in self._domain_semaphores:
+            self._domain_semaphores[domain] = asyncio.Semaphore(self.max_concurrent_per_domain)
+        return self._domain_semaphores[domain]
+    
+    async def _get_domain_lock(self, domain: str) -> asyncio.Lock:
+        """Get or create lock for a domain in the current event loop."""
+        if domain not in self._domain_locks:
+            self._domain_locks[domain] = asyncio.Lock()
+        return self._domain_locks[domain]
     
     def _get_domain(self, url: str) -> str:
         """Extract domain from URL."""
@@ -265,10 +289,12 @@ class AsyncWebsiteScraper:
         content_parts = []
         successful_urls = []
         
+        domain_sem = await self._get_domain_semaphore(domain)
+        
         for path in self.PRIORITY_PATHS["tier1"]:
             target_url = urljoin(base_url, path)
             
-            async with self._domain_semaphores[domain]:
+            async with domain_sem:
                 content = await self._fetch_page(client, target_url, self.TIMEOUT_TIER1)
                 
                 if content:
@@ -286,7 +312,7 @@ class AsyncWebsiteScraper:
             for path in self.PRIORITY_PATHS["tier2"]:
                 target_url = urljoin(base_url, path)
                 
-                async with self._domain_semaphores[domain]:
+                async with domain_sem:
                     content = await self._fetch_page(client, target_url, self.TIMEOUT_TIER2)
                     
                     if content:
@@ -304,7 +330,7 @@ class AsyncWebsiteScraper:
             for path in self.PRIORITY_PATHS["tier3"]:
                 target_url = urljoin(base_url, path)
                 
-                async with self._domain_semaphores[domain]:
+                async with domain_sem:
                     content = await self._fetch_page(client, target_url, self.TIMEOUT_TIER3)
                     
                     if content:
@@ -351,7 +377,9 @@ class AsyncWebsiteScraper:
                 )
         
         try:
-            async with self.global_semaphore:
+            global_sem = await self._ensure_semaphores()
+            
+            async with global_sem:
                 content_parts, successful_urls = await self._fetch_paths_parallel(
                     client, base_url, domain
                 )
@@ -563,14 +591,17 @@ class AsyncWebsiteScraper:
                     )
         
         try:
-            async with self.global_semaphore:
+            global_sem = await self._ensure_semaphores()
+            
+            async with global_sem:
                 contact_parts = []
                 successful_urls = []
                 
                 for path in self.CONTACT_PATHS:
                     target_url = urljoin(base_url, path)
                     
-                    async with self._domain_semaphores[domain]:
+                    domain_sem = await self._get_domain_semaphore(domain)
+                    async with domain_sem:
                         content = await self._fetch_page_with_contacts(client, target_url, self.TIMEOUT_CONTACT)
                         
                         if content:
@@ -582,7 +613,8 @@ class AsyncWebsiteScraper:
                 
                 if not contact_parts:
                     self.logger.debug(f"No contact pages, trying homepage for {domain}")
-                    async with self._domain_semaphores[domain]:
+                    domain_sem = await self._get_domain_semaphore(domain)
+                    async with domain_sem:
                         homepage_content = await self._fetch_page_with_contacts(client, base_url, self.TIMEOUT_CONTACT)
                         if homepage_content:
                             contact_parts.append(homepage_content)
@@ -662,4 +694,13 @@ class AsyncWebsiteScraper:
     
     def scrape_contacts_batch_sync(self, website_urls: List[str]) -> Dict[str, ContactScrapedContent]:
         """Synchronous wrapper for scrape_contacts_batch."""
-        return asyncio.run(self.scrape_contacts_batch(website_urls))
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    lambda: asyncio.run(self.scrape_contacts_batch(website_urls))
+                )
+                return future.result()
+        except RuntimeError:
+            return asyncio.run(self.scrape_contacts_batch(website_urls))

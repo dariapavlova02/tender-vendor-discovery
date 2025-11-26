@@ -116,6 +116,128 @@ class TenderProfiler:
         
         return "".join(context_parts)
 
+    def _calculate_semantic_overlap(self, q1: str, q2: str) -> float:
+        """Calculate Jaccard similarity between two queries."""
+        def tokenize(query: str) -> set:
+            stopwords = {'a', 'an', 'and', 'or', 'the', 'for', 'of', 'in', 'to', 'with', 'by', 'from'}
+            import re
+            words = re.findall(r'\b[a-z]+\b', query.lower())
+            return {w for w in words if w not in stopwords and len(w) > 2}
+        
+        words1 = tokenize(q1)
+        words2 = tokenize(q2)
+        if not words1 or not words2:
+            return 0.0
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        return intersection / union if union > 0 else 0.0
+
+    def _calculate_specificity_score(self, query: str) -> float:
+        """Score query by specificity level (higher = more specific)."""
+        import re
+        words = re.findall(r'\b[a-z]+\b', query.lower())
+        stopwords = {'a', 'an', 'and', 'or', 'the', 'for', 'of', 'in', 'to', 'with', 'by', 'from'}
+        meaningful_words = [w for w in words if w not in stopwords and len(w) > 2]
+        
+        score = len(meaningful_words)
+        
+        specific_indicators = ['oem', 'manufacturer', 'producer', 'maker', 'fabricator']
+        if any(ind in query.lower() for ind in specific_indicators):
+            score += 2
+        
+        business_type_indicators = ['distributor', 'wholesaler', 'installer', 'integrator', 
+                                     'consultant', 'service', 'maintenance']
+        if any(ind in query.lower() for ind in business_type_indicators):
+            score += 1
+        
+        return score
+
+    def _optimize_search_terms(self, queries: List[str], target_count: int = 20) -> List[str]:
+        if not queries:
+            self.logger.warning("No queries provided for optimization")
+            return []
+        
+        self.logger.info(f"Optimizing {len(queries)} queries → target {target_count}")
+        
+        if len(queries) <= target_count:
+            self.logger.info(f"No optimization needed: {len(queries)} queries ≤ target {target_count}")
+            return queries
+        
+        n = len(queries)
+        clusters = []
+        assigned = set()
+        
+        for i in range(n):
+            if i in assigned:
+                continue
+            
+            cluster = [i]
+            assigned.add(i)
+            
+            for j in range(i + 1, n):
+                if j in assigned:
+                    continue
+                
+                overlap = self._calculate_semantic_overlap(queries[i], queries[j])
+                if overlap >= 0.4:
+                    cluster.append(j)
+                    assigned.add(j)
+            
+            clusters.append(cluster)
+        
+        self.logger.info(f"Clustered {len(queries)} queries into {len(clusters)} semantic groups")
+        
+        selected_queries = []
+        for cluster in clusters:
+            if len(cluster) == 1:
+                selected_queries.append(queries[cluster[0]])
+            else:
+                scored = [(idx, self._calculate_specificity_score(queries[idx])) 
+                          for idx in cluster]
+                scored.sort(key=lambda x: x[1], reverse=True)
+                best_idx = scored[0][0]
+                selected_queries.append(queries[best_idx])
+                
+                overlap_str = f"{self._calculate_semantic_overlap(queries[cluster[0]], queries[cluster[1]]):.2f}"
+                self.logger.debug(
+                    f"Cluster of {len(cluster)}: kept '{queries[best_idx][:50]}...' "
+                    f"(score={scored[0][1]:.1f}, dropped {len(cluster)-1} similar queries)"
+                )
+        
+        if len(selected_queries) > target_count:
+            scored_all = [(q, self._calculate_specificity_score(q)) 
+                          for q in selected_queries]
+            scored_all.sort(key=lambda x: x[1], reverse=True)
+            
+            specific_count = target_count // 3
+            medium_count = target_count // 3
+            broad_count = target_count - specific_count - medium_count
+            
+            result = []
+            result.extend([q for q, s in scored_all[:specific_count]])
+            result.extend([q for q, s in scored_all[-broad_count:]])
+            
+            remaining = [q for q, s in scored_all[specific_count:-broad_count] 
+                        if q not in result]
+            result.extend(remaining[:medium_count])
+            
+            self.logger.info(
+                f"Balanced specificity: {specific_count} specific + "
+                f"{medium_count} medium + {broad_count} broad = {len(result)} queries"
+            )
+            return result[:target_count]
+        
+        self.logger.info(f"Optimized: {len(queries)} → {len(selected_queries)} unique queries")
+        
+        if len(selected_queries) < target_count:
+            shortfall = target_count - len(selected_queries)
+            self.logger.warning(
+                f"Only {len(selected_queries)}/{target_count} queries generated. "
+                f"Consider reviewing LLM prompt effectiveness."
+            )
+        
+        return selected_queries
+
     def generate_context(self, raw_sections: List[Any], max_tokens: int = 3000) -> TenderContext:
         if not self.llm_provider:
             self.logger.warning("No LLM provider configured, returning empty context")
@@ -139,80 +261,43 @@ class TenderProfiler:
         
         scope_excerpt = smart_context[:max_tokens * 4]
 
-        prompt = f"""SYSTEM ROLE:
-Act as a procurement market analyst. Use only the provided scope excerpt. Never invent agencies, geographies, or product lines not present in the text.
+        prompt = f"""Act as a procurement market analyst. Use only the provided scope excerpt.
 
 OUTPUT REQUIREMENTS:
-1. sector: concise label describing the procurement vertical.
-2. industry_description: exactly 2 sentences (<=60 words total) summarizing what the buyer needs.
-3. technical_keywords: return exactly 15 unique keywords ordered from most specific to most general; prioritize terms buyers would use to screen vendors.
-4. search_terms: return exactly 20 HIGHLY DIVERSE search strings WITHOUT geographic qualifiers. 
+1. sector: concise label describing the procurement vertical
+2. industry_description: exactly 2 sentences (≤60 words) summarizing buyer needs
+3. technical_keywords: exactly 15 unique keywords ordered from most specific to general
+4. search_terms: 25-30 DIVERSE search strings WITHOUT geographic qualifiers
    
-   ⚠️ CRITICAL CONSTRAINT: NO WORD (except industry names) may appear >3 times across all 20 queries. Count carefully!
-   ⚠️ FORBIDDEN OVERUSED WORDS: "equipment" >3, "device" >3, "supplier" >3, "supply/supplies" >3, "vendor" >3 = OUTPUT FAILS.
-   ⚠️ WORD ALTERNATIVES: Instead of repeating, use: machinery, apparatus, tools, systems, technology, instruments, gear, solutions, products, goods, materials, resources.
+   VENDOR COVERAGE STRATEGY (critical - must include ALL three levels):
    
-   MANDATORY DISTRIBUTION:
-   - Specificity: 6 highly specific (30%) + 8 medium (40%) + 6 broad (30%)
-     * Highly specific: Named products like "ICU ventilator", "surgical sutures", "MRI scanners"
-     * Medium: Product categories like "respiratory care", "wound care", "diagnostic imaging"  
-     * Broad: Sectors like "medical technology", "healthcare services", "clinical solutions"
-   - Business types: 7 manufacturers/OEM (35%) + 3 distributors (15%) + 6 services (30%) + 2 consultants (10%) + 2 integrators/VAR (10%)
+   SPECIFIC QUERIES (~10): Target exact products/models
+   - Pattern: "[specific product/model] [business type]"
+   - Examples: "adjustable hospital bed frame manufacturers", "ICU ventilator producers"
+   - Purpose: Find specialized manufacturers of exact product
    
-   Diversity dimensions to vary:
-   - Product specificity: Narrow specialties ("ventilator manufacturers") → Medium categories ("respiratory care") → Broad sectors ("medical technology")
-   - Business models: manufacturers, distributors, wholesalers, service providers, consultants, installers, integrators, resellers
-   - Market segments: Commercial vendors, government contractors, institutional suppliers, retail distributors
-   - Technical approaches: Traditional suppliers, innovative technology vendors, specialized niche providers, integrated solution providers
-   - Supply chain roles: OEMs, authorized distributors, value-added resellers, maintenance providers, logistics specialists
+   MEDIUM QUERIES (~10): Target product categories
+   - Pattern: "[product category] [business type]"
+   - Examples: "healthcare furniture distributors", "respiratory equipment wholesalers"
+   - Purpose: Find mid-size distributors serving product category
    
-   Examples: "ammunition manufacturer", "ballistic vest OEM", "tactical gear distributor", "law enforcement installer", "firearms training services"
-5. gsin_codes / unspsc_codes: include only codes explicitly present in the text; otherwise return empty arrays.
-6. province: two-letter Canadian province/territory if clearly stated, else null.
-7. country: choose "USA" or "Canada" only if one set of indicators clearly dominates (see below). If signals conflict or are missing, return null. Use cues such as agencies (DHS vs PSPC), regulatory references (FAR vs SACC), and postal conventions.
-8. confidence: float between 0 and 1 (two decimals) reflecting how certain you are about sector + geography (1.0 = explicit statements, 0.3 = inferred/weak).
+   BROAD QUERIES (~10): Target industry sectors
+   - Pattern: "[industry sector] [business type]"
+   - Examples: "medical equipment suppliers", "healthcare services providers", "elder care solutions companies"
+   - Purpose: Find large multi-product distributors and industry leaders
+   
+   BUSINESS TYPE MIX:
+   - Manufacturers/OEMs: 35-40%
+   - Distributors/wholesalers/suppliers: 25-30%
+   - Services: 20-25%
+   - Consultants/integrators: 10-15%
 
-ADDITIONAL RULES:
-- Scope excerpt truncated to {len(scope_excerpt)} characters; if critical data is missing, state "unknown" or null accordingly.
-- Sort keywords/search terms deterministically so downstream systems can rely on order.
-- For search_terms, apply strict ANTI-DUPLICATION rules to prevent wasting API credits:
-  1. WORD FREQUENCY CAP (CRITICAL): Before finalizing, COUNT how many times each word appears. If "equipment" appears 4+ times → FAIL. If "device" appears 4+ times → FAIL. Replace with alternatives: machinery, apparatus, tools, systems, technology, instruments, gear, solutions.
-  2. NO SYNONYMS: Avoid "medical equipment" + "medical devices" + "healthcare supplies" → choose ONE most relevant term
-  3. VARY BUSINESS TYPES: Must hit distribution: 7 manufacturers/OEM + 3 distributors + 6 services + 2 consultants + 2 integrators
-  4. VARY SPECIFICITY: Must hit distribution: 6 highly specific + 8 medium + 6 broad
-  5. MAP TO TENDER NEEDS: If tender requires equipment + maintenance + training, create SEPARATE queries for each (don't lump into generic "equipment supplier")
-  6. OVERLAP TEST: Mentally check if 2 queries would return >70% same companies → if yes, MERGE into 1 more specific query or DROP the less relevant one
-  7. USE SPECIFIC PRODUCT NAMES: Instead of "portable X-ray equipment", use "mobile radiography systems" or "digital X-ray solutions"
-- If both USA and Canada cues exist with similar strength, set country=null and explain uncertainty in industry_description sentence 2.
-- Return JSON only, matching this schema.
+5. gsin_codes / unspsc_codes: only codes explicitly in text; else empty arrays
+6. province: two-letter Canadian province/territory if stated, else null
+7. country: "USA" or "Canada" if indicators clearly dominate, else null
+8. confidence: float 0-1 reflecting certainty about sector + geography
 
-SEARCH_TERMS QUALITY EXAMPLES:
-
-BAD - Word repetition (redundant, waste API credits):
-❌ "medical equipment distributors"
-❌ "portable X-ray equipment manufacturers"  
-❌ "hospital equipment authorized distributors"
-❌ "surgical equipment manufacturers"
-❌ "biomedical equipment installation services"
-→ Problem: "equipment" appears 5 times. Limit: 3 max. Use alternatives: systems, technology, instruments, apparatus, tools, machinery.
-
-BAD - "device" overuse:
-❌ "medical device suppliers"
-❌ "diagnostic device manufacturers"  
-❌ "monitoring device OEM"
-❌ "emergency device distributors"
-→ Problem: "device" appears 4 times. Use alternatives: systems, instruments, units, solutions.
-
-GOOD - Diverse vocabulary (unique vendor segments):
-✓ "ICU ventilator manufacturers"              (specific product name, no generic words)
-✓ "hospital supply chain consultants"         (service, not product)
-✓ "biomedical installation services"          (service, different terminology)
-✓ "diagnostic imaging OEM"                    (category + role, no "equipment"/"device")
-✓ "healthcare facilities maintenance"         (service, no product words)
-✓ "patient monitoring systems integrator"     (uses "systems" not "equipment")
-✓ "surgical instrument distributors"          (uses "instrument" not "equipment")
-✓ "mobile radiography solutions manufacturers"(uses "solutions" not "equipment")
-✓ "critical care technology VAR"              (uses "technology" not "equipment")
+NOTE: Scope excerpt is {len(scope_excerpt)} characters. Generate semantically diverse queries that maximize vendor discovery coverage.
 
 Scope Excerpt:
 {scope_excerpt}
@@ -221,8 +306,8 @@ Return strict JSON:
 {{
   "sector": "...",
   "industry_description": "Sentence 1. Sentence 2",
-  "technical_keywords": ["keyword_1", "keyword_2", "keyword_3", "...15"],
-  "search_terms": ["query 1", "query 2", "...", "query 20"],
+  "technical_keywords": ["keyword_1", "keyword_2", "...15"],
+  "search_terms": ["query 1", "query 2", "...", "query 30"],
   "gsin_codes": ["1234"],
   "unspsc_codes": ["12345678"],
   "province": "ON" or null,
@@ -242,12 +327,19 @@ Return strict JSON:
             
             sector = data.get("sector", "Unknown")
             keywords = data.get("technical_keywords", [])
-            search_terms = data.get("search_terms", [])
+            raw_search_terms = data.get("search_terms", [])
+            
+            self.logger.info(f"LLM generated {len(raw_search_terms)} raw search terms")
+            self.logger.debug(f"Sample raw terms: {raw_search_terms[:5]}")
+            
+            search_terms = self._optimize_search_terms(raw_search_terms, target_count=20)
+            self.logger.info(f"Optimized to {len(search_terms)} diverse search terms")
+            self.logger.debug(f"Sample optimized terms: {search_terms[:5]}")
             
             if sector == "Unknown" or not keywords:
                 self.logger.warning(
                     f"LLM returned incomplete data: sector={sector}, "
-                    f"keywords={len(keywords)}, search_terms={len(search_terms)}"
+                    f"keywords={len(keywords)}, raw_search_terms={len(raw_search_terms)}"
                 )
                 self.logger.debug(f"LLM raw response: {content[:500]}")
             

@@ -101,6 +101,70 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         
         return vendor
     
+    async def enrich_async(self, vendor: VendorRecord) -> VendorRecord:
+        if self._has_real_contacts(vendor):
+            self.logger.debug(f"Vendor {vendor.company_name} already has real contacts, skipping")
+            return vendor
+        
+        if not vendor.website:
+            self.logger.debug(f"Vendor {vendor.company_name} has no website, skipping contact scraping")
+            return vendor
+        
+        self.logger.info(f"Scraping contacts for {vendor.company_name} ({vendor.website})")
+        
+        scrape_results = await self.scraper.scrape_contacts_batch([vendor.website])
+        
+        if vendor.website not in scrape_results:
+            self.logger.warning(f"No scrape result for {vendor.website}")
+            contacts = self.extractor.extract("", use_llm_fallback=False)
+        else:
+            scrape_result = scrape_results[vendor.website]
+            if scrape_result.status != "success" or not scrape_result.contact_text:
+                self.logger.warning(f"Contact scrape failed: {scrape_result.status}")
+                contacts = self.extractor.extract("", use_llm_fallback=False)
+            else:
+                contacts = self.extractor.extract(
+                    scrape_result.contact_text, 
+                    use_llm_fallback=self.enable_llm_fallback
+                )
+        
+        if contacts.emails:
+            vendor.email = contacts.emails[0]
+            vendor.filtering_metadata["email_source"] = contacts.email_sources[0]
+            vendor.filtering_metadata["email_confidence"] = contacts.confidence
+            vendor.filtering_metadata["all_emails"] = contacts.emails
+            self.logger.info(f"  ✓ Level 1: Found {len(contacts.emails)} emails via {contacts.extraction_method}")
+        else:
+            if not vendor.email:
+                self._apply_backup_contacts(vendor)
+            
+            if not vendor.email and self.enable_targeted_serper and self.serper_client:
+                await self._targeted_serper_search_async(vendor)
+        
+        if contacts.phones:
+            vendor.phone = contacts.phones[0]
+            vendor.filtering_metadata["phone_source"] = contacts.phone_sources[0]
+            vendor.filtering_metadata["phone_confidence"] = contacts.confidence
+            vendor.filtering_metadata["all_phones"] = contacts.phones
+            self.logger.info(f"  ✓ Found {len(contacts.phones)} phones via {contacts.extraction_method}")
+        else:
+            if not vendor.phone and 'serper_backup_phones' in vendor.filtering_metadata:
+                phones = vendor.filtering_metadata['serper_backup_phones']
+                vendor.phone = phones[0]
+                vendor.filtering_metadata["phone_source"] = "serper_backup"
+                vendor.filtering_metadata["phone_confidence"] = 0.7
+                vendor.filtering_metadata["all_phones"] = phones
+                self.logger.info(f"  ✓ Level 2: Using {len(phones)} backup phones from Serper snippets")
+        
+        if contacts.contact_names:
+            vendor.filtering_metadata["contact_names"] = contacts.contact_names
+            self.logger.info(f"  ✓ Found {len(contacts.contact_names)} contact names")
+        
+        if vendor.email or vendor.phone:
+            vendor.enrichment_flags.append(self.name)
+        
+        return vendor
+    
     def _apply_backup_contacts(self, vendor: VendorRecord) -> None:
         backup_emails = vendor.filtering_metadata.get('serper_backup_emails')
         if backup_emails:
@@ -124,6 +188,46 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
             query = self._build_serper_query(vendor)
             
             result = serper.search_company(
+                company_name=vendor.company_name,
+                include_contacts=True,
+                query=query,
+            )
+            
+            if result.contacts and result.contacts.emails:
+                filtered = filter_emails_for_vendor(vendor, result.contacts.emails)
+                if filtered:
+                    vendor.email = filtered[0]
+                    vendor.filtering_metadata["email_source"] = "serper_targeted"
+                    vendor.filtering_metadata["email_confidence"] = 0.6
+                    vendor.filtering_metadata["all_emails"] = filtered
+                    self.logger.info(
+                        f"  ✓ Level 3: Found {len(filtered)} filtered emails via targeted Serper"
+                    )
+
+            if result.contacts and result.contacts.emails and not filtered:
+                self.logger.info("  ↩️ Serper returned only generic emails, skipped")
+            
+            if result.contacts and result.contacts.phones and not vendor.phone:
+                vendor.phone = result.contacts.phones[0]
+                vendor.filtering_metadata["phone_source"] = "serper_targeted"
+                vendor.filtering_metadata["phone_confidence"] = 0.6
+                vendor.filtering_metadata["all_phones"] = result.contacts.phones
+                self.logger.info(f"  ✓ Level 3: Found {len(result.contacts.phones)} phones via targeted Serper")
+                
+        except Exception as exc:
+            self.logger.debug(f"  ✗ Level 3 targeted Serper failed: {exc}")
+    
+    async def _targeted_serper_search_async(self, vendor: VendorRecord) -> None:
+        if not self.serper_client:
+            return
+        
+        serper = self.serper_client
+        filtered: List[str] = []
+        try:
+            self.logger.info(f"  → Level 3: Targeted Serper search for contacts")
+            query = self._build_serper_query(vendor)
+            
+            result = await serper.search_company_async(
                 company_name=vendor.company_name,
                 include_contacts=True,
                 query=query,

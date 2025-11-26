@@ -1,6 +1,7 @@
 """Concrete LLM provider implementations."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Optional
@@ -106,4 +107,114 @@ class OpenAIProvider(LLMProvider):
         
         except Exception as exc:
             self.logger.error("OpenAI API call failed: %s", exc)
+            raise
+
+
+class AsyncOpenAIProvider(LLMProvider):
+    """Async OpenAI implementation for parallel LLM requests."""
+    
+    def __init__(
+        self, 
+        api_key: Optional[str] = None,
+        default_model: str = "gpt-5-mini",
+        use_flex_tier: bool = False,
+        concurrency_limit: int = 20
+    ):
+        """Initialize async OpenAI provider.
+        
+        Args:
+            api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
+            default_model: Default model to use (default: gpt-5-mini for cost optimization)
+            use_flex_tier: Whether to use flex tier for 50% discount (adds latency)
+            concurrency_limit: Max parallel OpenAI requests (default: 20)
+        """
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            raise ImportError(
+                "OpenAI package not installed. Run: poetry add openai"
+            )
+        
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "OpenAI API key not provided. Set OPENAI_API_KEY environment variable "
+                "or pass api_key parameter."
+            )
+        
+        self.client = AsyncOpenAI(api_key=self.api_key)
+        self.default_model = default_model
+        self.use_flex_tier = use_flex_tier
+        self.semaphore = asyncio.Semaphore(concurrency_limit)
+        self.logger = logging.getLogger(self.__class__.__name__)
+    
+    def generate(self, prompt: str, response_format: Optional[str] = None, model: Optional[str] = None) -> str:
+        """Sync wrapper for backward compatibility."""
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    lambda: asyncio.run(self.generate_async(prompt, response_format, model))
+                )
+                return future.result()
+        except RuntimeError:
+            return asyncio.run(self.generate_async(prompt, response_format, model))
+    
+    async def generate_async(self, prompt: str, response_format: Optional[str] = None, model: Optional[str] = None) -> str:
+        """Generate response using async OpenAI API.
+        
+        Args:
+            prompt: The prompt to send to the model
+            response_format: Optional format hint ("json" for JSON mode)
+            model: Optional model override (uses default_model if not specified)
+            
+        Returns:
+            Generated text response
+        """
+        target_model = model or self.default_model
+        
+        try:
+            async with self.semaphore:
+                params = {
+                    "model": target_model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a JSON extractor. Output ONLY raw JSON. Do not include markdown ```json``` tags. Do not write conversational text. Be concise."
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                }
+                
+                if "mini" in target_model.lower() or "nano" in target_model.lower():
+                    params["max_completion_tokens"] = 2500
+                else:
+                    params["temperature"] = 0.1
+                
+                if response_format == "json":
+                    params["response_format"] = {"type": "json_object"}
+                
+                if self.use_flex_tier:
+                    params["service_tier"] = "flex"
+                
+                response = await self.client.chat.completions.create(**params)
+                
+                content = response.choices[0].message.content
+                
+                usage = response.usage
+                self.logger.debug(
+                    "OpenAI async API call - Model: %s, Tokens: %d input / %d output",
+                    target_model,
+                    usage.prompt_tokens,
+                    usage.completion_tokens
+                )
+                
+                return content
+        
+        except Exception as exc:
+            self.logger.error("OpenAI async API call failed: %s", exc)
             raise

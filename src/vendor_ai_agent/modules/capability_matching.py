@@ -74,6 +74,153 @@ class CapabilityMatcher(CapabilityMatcherContract):
         results.sort(key=lambda x: x.capability_match_score, reverse=True)
         return results
     
+    async def score_async(
+        self, 
+        profile: TenderProfile, 
+        vendors: Iterable[VendorRecord]
+    ) -> List[VendorMatchResult]:
+        """Async score vendors with parallel LLM calls."""
+        results: List[VendorMatchResult] = []
+        vendor_list = list(vendors)
+        
+        llm_eligible_vendors = [
+            v for v in vendor_list 
+            if "website_content" in v.filtering_metadata
+        ]
+        
+        for vendor in vendor_list:
+            if "website_content" not in vendor.filtering_metadata:
+                reason = vendor.filtering_metadata.get("scrape_error") or "No website content available"
+                vendor.filtering_metadata.setdefault("match_status", "needs_data")
+                vendor.filtering_metadata.setdefault("match_reason", reason)
+        
+        if not llm_eligible_vendors:
+            return results
+        
+        if not (self.config.enable_llm_assessment and self.llm_provider):
+            for vendor in llm_eligible_vendors:
+                results.append(self._rule_based_score(profile, vendor))
+            results.sort(key=lambda x: x.capability_match_score, reverse=True)
+            return results
+        
+        from .llm_providers import AsyncOpenAIProvider
+        if not isinstance(self.llm_provider, AsyncOpenAIProvider):
+            self.logger.warning(
+                "LLM provider is not async, falling back to sync scoring"
+            )
+            return self.score(profile, vendors)
+        
+        tasks = [
+            self._llm_assess_capability_async(profile, vendor)
+            for vendor in llm_eligible_vendors
+        ]
+        
+        scored_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for vendor, result in zip(llm_eligible_vendors, scored_results):
+            if isinstance(result, Exception):
+                self.logger.warning(
+                    f"LLM async assessment failed for {vendor.company_name}: {result}"
+                )
+                if self.config.fallback_to_rule_based:
+                    results.append(self._rule_based_score(profile, vendor))
+            else:
+                results.append(result)
+        
+        results.sort(key=lambda x: x.capability_match_score, reverse=True)
+        return results
+    
+    async def _llm_assess_capability_async(
+        self, 
+        profile: TenderProfile, 
+        vendor: VendorRecord
+    ) -> VendorMatchResult:
+        """Async version of _llm_assess_capability."""
+        website_content = vendor.filtering_metadata.get("website_content", "")
+        content_source = vendor.filtering_metadata.get("content_source", vendor.website or "")
+        
+        tender_requirements = self._build_tender_requirements_summary(profile)
+        
+        prompt = f"""You are a product/service matching AI. Determine if this vendor SELLS what the tender needs.
+
+RULES:
+1. Website content = PRIMARY (80%), metadata = SECONDARY (20%)
+2. Focus: What do they offer TODAY? Ignore past contracts as proof of capability.
+3. Lobbying offices, associations, advocacy groups = score < 10 regardless of metadata
+
+SCORING:
+100-90: PERFECT - Sells exactly what tender needs
+89-70: STRONG - Relevant products in same vertical
+69-50: MODERATE - Related industry, potential capability
+49-30: WEAK - Tangential relevance, major gaps
+29-0: NO MATCH - Unrelated, lobbying office, or association
+
+METADATA (apply AFTER scoring):
+- Score ≥70 + past_winner: +5 | Score ≥60 + high_value_supplier: +5
+- Score <50: ignore all metadata
+
+EXAMPLES:
+
+Ex1: Perfect Match
+Tender: "Hospital beds" | Website: "MedEquip - hospital bed manufacturer"
+→ Score: 95 | Rationale: "Band: Perfect Match — Evidence: 'hospital beds' in catalog"
+
+Ex2: NO MATCH - Lobbying (prevent false positive!)
+Tender: "Utility vehicles" | Website: "Natural Gas Vehicle Alliance - lobbying office"
+Metadata: past_winner, $5.5M contracts
+→ Score: 5 | Rationale: "Band: No Match — Evidence: 'lobbying office', not supplier"
+
+Ex3: NO MATCH - Association (ignore metadata!)
+Tender: "Ammunition" | Website: "Defense Contractors Assoc - advocacy group"
+Metadata: past_winner, $10M, 50 contracts
+→ Score: 8 | Rationale: "Band: No Match — Evidence: 'association', not supplier"
+
+---
+TENDER: {tender_requirements}
+
+VENDOR: {vendor.company_name}
+Website: {content_source}
+Location: {vendor.location or "Unknown"}
+
+CAPABILITIES: {website_content[:2500]}
+
+METADATA (tie-breaking only):
+Past winner: {vendor.is_past_winner} | Value: ${vendor.total_contract_value or 0:,.0f} | Count: {vendor.contract_count or 0}
+Flags: {", ".join(vendor.enrichment_flags) if vendor.enrichment_flags else "None"}
+
+Return JSON:
+{{
+  "score": 0,
+  "rationale": "Band: [band] — Evidence: \"[quote]\"",
+  "confidence": "high|medium|low"
+}}"""
+        
+        try:
+            response = await self.llm_provider.generate_async(
+                prompt, 
+                response_format="json",
+                model=self.config.llm_model
+            )
+            
+            data = json.loads(response)
+            score = float(data.get("score", 50))
+            rationale = data.get("rationale", f"{vendor.company_name} - LLM assessment")
+            
+            score = max(0.0, min(100.0, score))
+            
+            self.logger.debug(f"LLM async scored {vendor.company_name}: {score}/100")
+            
+            return VendorMatchResult(
+                vendor=vendor,
+                capability_match_score=score,
+                rationale=rationale,
+                references=[content_source],
+            )
+        
+        except (json.JSONDecodeError, ValueError, KeyError) as exc:
+            self.logger.error(f"Failed to parse async LLM response for {vendor.company_name}: {exc}")
+            raise
+    
     def _rule_based_score(self, profile: TenderProfile, vendor: VendorRecord) -> VendorMatchResult:
         project_type = profile.doc_extracted.structured.project_type if profile.doc_extracted else None
         
@@ -100,54 +247,58 @@ class CapabilityMatcher(CapabilityMatcherContract):
         
         tender_requirements = self._build_tender_requirements_summary(profile)
         
-        prompt = f"""SYSTEM ROLE:
-You are a procurement capability classifier. Use only the supplied tender requirements, structured metadata, and vendor website excerpt. Never invent agencies, capabilities, or performance proof that is not explicitly stated.
+        prompt = f"""You are a product/service matching AI. Determine if this vendor SELLS what the tender needs.
 
-SCORING CHECKLIST:
-1. Extract explicit evidence from tender requirements and vendor capabilities. Quote or tightly paraphrase snippets (prefix with Evidence: "...").
-2. Choose ONE rubric band (pick the lowest applicable) and justify it before emitting the numeric score:
-   - Specialist (90-100): purpose-built supplier with direct proof of delivering this scope.
-   - Credible overlap (60-89): strong overlap but minor gaps or indirect references.
-   - Partial fit (30-59): limited overlap, adjacent offerings, or missing key elements.
-   - No fit / insufficient data (0-29): no credible match or the website lacks relevant content.
-3. Apply structured metadata as boosts/penalties: past_winner and high total_contract_value support higher scores; enrichment_flags (high_value_supplier, frequent_supplier) add confidence; lack of matching website evidence or contradictory text forces insufficient_evidence=true and score < 30.
-4. If you cannot cite a concrete snippet supporting the scope, set insufficient_evidence=true, confidence="low", and keep score < 30 even if metadata looks positive.
+RULES:
+1. Website content = PRIMARY (80%), metadata = SECONDARY (20%)
+2. Focus: What do they offer TODAY? Ignore past contracts as proof of capability.
+3. Lobbying offices, associations, advocacy groups = score < 10 regardless of metadata
 
-CONTEXT LIMITS:
-- Tender requirements truncated to 2,500 characters.
-- Website excerpt truncated to 2,500 characters.
-If crucial information is missing, state that in the rationale.
+SCORING:
+100-90: PERFECT - Sells exactly what tender needs
+89-70: STRONG - Relevant products in same vertical
+69-50: MODERATE - Related industry, potential capability
+49-30: WEAK - Tangential relevance, major gaps
+29-0: NO MATCH - Unrelated, lobbying office, or association
 
-TENDER REQUIREMENTS:
-{tender_requirements}
+METADATA (apply AFTER scoring):
+- Score ≥70 + past_winner: +5 | Score ≥60 + high_value_supplier: +5
+- Score <50: ignore all metadata
 
-STRUCTURED METADATA:
-- Past winner: {vendor.is_past_winner}
-- Total contract value: ${vendor.total_contract_value or 0:,.0f}
-- Contract count: {vendor.contract_count or 0}
-- Enrichment flags: {", ".join(vendor.enrichment_flags) if vendor.enrichment_flags else "None"}
-- Content source: {content_source}
+EXAMPLES:
 
-VENDOR INFORMATION:
-Company: {vendor.company_name}
+Ex1: Perfect Match
+Tender: "Hospital beds" | Website: "MedEquip - hospital bed manufacturer"
+→ Score: 95 | Rationale: "Band: Perfect Match — Evidence: 'hospital beds' in catalog"
+
+Ex2: NO MATCH - Lobbying (prevent false positive!)
+Tender: "Utility vehicles" | Website: "Natural Gas Vehicle Alliance - lobbying office"
+Metadata: past_winner, $5.5M contracts
+→ Score: 5 | Rationale: "Band: No Match — Evidence: 'lobbying office', not supplier"
+
+Ex3: NO MATCH - Association (ignore metadata!)
+Tender: "Ammunition" | Website: "Defense Contractors Assoc - advocacy group"
+Metadata: past_winner, $10M, 50 contracts
+→ Score: 8 | Rationale: "Band: No Match — Evidence: 'association', not supplier"
+
+---
+TENDER: {tender_requirements}
+
+VENDOR: {vendor.company_name}
 Website: {content_source}
 Location: {vendor.location or "Unknown"}
 
-VENDOR CAPABILITIES (from website):
-{website_content[:2500]}
+CAPABILITIES: {website_content[:2500]}
 
-TASK:
-1. Determine the rubric band and explain why (e.g., "Band: Partial fit — ...").
-2. Score capability on a 0-100 scale using the rubric + metadata adjustments.
-3. Provide a concise rationale (<=60 words) that starts with the band and includes at least one evidence snippet from the vendor content or tender requirements (format Evidence: "...").
-4. Set confidence=high only when both metadata and website text align with tender needs; medium when partially supported; low when evidence is thin.
+METADATA (tie-breaking only):
+Past winner: {vendor.is_past_winner} | Value: ${vendor.total_contract_value or 0:,.0f} | Count: {vendor.contract_count or 0}
+Flags: {", ".join(vendor.enrichment_flags) if vendor.enrichment_flags else "None"}
 
-Return strict JSON ONLY:
+Return JSON:
 {{
   "score": 0,
-  "rationale": "Band: No fit — Evidence: \"only offers office supplies\"; tender demands ammunition",
-  "confidence": "low",
-  "insufficient_evidence": true
+  "rationale": "Band: [band] — Evidence: \"[quote]\"",
+  "confidence": "high|medium|low"
 }}"""
         
         try:

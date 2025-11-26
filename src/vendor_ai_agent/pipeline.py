@@ -1,6 +1,7 @@
 """High-level orchestration for the Tender Vendor AI Agent."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, asdict
@@ -67,15 +68,24 @@ class TenderVendorPipeline:
     def __init__(self, config: Optional[RuntimeConfig] = None) -> None:
         cfg = config or RuntimeConfig()
         
-        # Initialize LLM provider if configured
-        # Use CHEAP model (gpt-4o-mini) for TenderProfiler - simple keyword extraction task
-        llm_provider = None
+        self.llm_provider = None
+        use_async_llm = cfg.capability_matching.enable_llm_assessment
+        
         try:
-            llm_provider = OpenAIProvider(
-                default_model=cfg.llm.cheap_model,  # Use cheap model for profiling
-                use_flex_tier=cfg.llm.use_flex_tier
-            )
-            logging.info("LLM provider initialized with model: %s", cfg.llm.cheap_model)
+            if use_async_llm:
+                from .modules.llm_providers import AsyncOpenAIProvider
+                self.llm_provider = AsyncOpenAIProvider(
+                    default_model=cfg.llm.cheap_model,
+                    use_flex_tier=cfg.llm.use_flex_tier,
+                    concurrency_limit=20
+                )
+                logging.info("Async LLM provider initialized with model: %s", cfg.llm.cheap_model)
+            else:
+                self.llm_provider = OpenAIProvider(
+                    default_model=cfg.llm.cheap_model,
+                    use_flex_tier=cfg.llm.use_flex_tier
+                )
+                logging.info("Sync LLM provider initialized with model: %s", cfg.llm.cheap_model)
         except (ImportError, ValueError) as exc:
             logging.warning("LLM provider not available: %s. Using fallback mode.", exc)
         
@@ -149,7 +159,7 @@ class TenderVendorPipeline:
             from .enrichment_providers import ContactScrapingProvider, SerperClient
             serper_client = SerperClient(api_key=cfg.serper_api_key)
             contact_provider = ContactScrapingProvider(
-                llm_provider=llm_provider,
+                llm_provider=self.llm_provider,
                 scraper_timeout=cfg.enrichment.scraper_timeout_seconds,
                 enable_llm_fallback=cfg.enrichment.enable_llm_fallback,
                 serper_client=serper_client,
@@ -162,7 +172,7 @@ class TenderVendorPipeline:
             config=cfg,
             document_parser=DocumentParser(),
             document_fetcher=DocumentFetcher(),
-            requirement_extractor=RequirementExtractor(llm_provider=llm_provider),
+            requirement_extractor=RequirementExtractor(llm_provider=self.llm_provider),
             vendor_discovery=VendorDiscovery(sources=sources),
             vendor_enricher=VendorEnricher(
                 providers=enrichment_providers,
@@ -170,14 +180,14 @@ class TenderVendorPipeline:
                 batch_size=cfg.enrichment.batch_size,
                 min_batch_success_rate=cfg.enrichment.min_batch_success_rate,
                 max_enrichment_batches=cfg.enrichment.max_enrichment_batches,
-                target_relevant_vendors=int(cfg.filtering.max_candidates * 0.7),
+                target_relevant_vendors=cfg.filtering.max_candidates,
                 enable_batch_quality_gates=cfg.enrichment.enable_batch_quality_gates,
                 enable_sampling_fallback=cfg.enrichment.enable_sampling_fallback,
                 sample_positions=cfg.enrichment.sample_positions,
                 relevance_score_threshold=cfg.enrichment.relevance_score_threshold
             ),
             vendor_filter=VendorFilter(config=cfg.filtering),
-            capability_matcher=CapabilityMatcher(llm_provider=llm_provider, config=cfg.capability_matching),
+            capability_matcher=CapabilityMatcher(llm_provider=self.llm_provider, config=cfg.capability_matching),
             output_generator=OutputGenerator(),
             ingestion_router=TenderIngestionRouter.from_config(cfg),
             metadata_backfill=MetadataBackfill(),
@@ -293,25 +303,71 @@ class TenderVendorPipeline:
             )
 
         all_scored_matches: List[VendorMatchResult]
-        if hasattr(self.context.vendor_enricher, 'enrich_with_scoring'):
-            (
-                enriched_vendors,
-                relevant_matches,
-                all_scored_matches,
-            ) = self.context.vendor_enricher.enrich_with_scoring(
-                profile=tender_profile,
-                vendors=batch_vendors,
-                scoring_fn=self.context.capability_matcher.score,
-            )
-            matches = (
-                relevant_matches if relevant_matches else all_scored_matches
-            )
-        else:
-            enriched_vendors = self.context.vendor_enricher.enrich(batch_vendors)
-            all_scored_matches = self.context.capability_matcher.score(
-                tender_profile, enriched_vendors
-            )
-            matches = all_scored_matches
+        
+        from .modules.llm_providers import AsyncOpenAIProvider
+        use_async = (
+            hasattr(self.context.vendor_enricher, 'enrich_with_scoring_async')
+            and hasattr(self.context.capability_matcher, 'score_async')
+            and isinstance(self.llm_provider, AsyncOpenAIProvider)
+        )
+        
+        if use_async:
+            logging.info("Using async pipeline for enrichment + scoring")
+            try:
+                try:
+                    loop = asyncio.get_running_loop()
+                    logging.debug("Detected existing event loop (Streamlit), using run_until_complete")
+                    (
+                        enriched_vendors,
+                        relevant_matches,
+                        all_scored_matches,
+                    ) = loop.run_until_complete(
+                        self.context.vendor_enricher.enrich_with_scoring_async(
+                            profile=tender_profile,
+                            vendors=batch_vendors,
+                            scoring_fn_async=self.context.capability_matcher.score_async,
+                        )
+                    )
+                except RuntimeError:
+                    logging.debug("No event loop detected, using asyncio.run()")
+                    (
+                        enriched_vendors,
+                        relevant_matches,
+                        all_scored_matches,
+                    ) = asyncio.run(
+                        self.context.vendor_enricher.enrich_with_scoring_async(
+                            profile=tender_profile,
+                            vendors=batch_vendors,
+                            scoring_fn_async=self.context.capability_matcher.score_async,
+                        )
+                    )
+                matches = (
+                    relevant_matches if relevant_matches else all_scored_matches
+                )
+            except Exception as exc:
+                logging.warning(f"Async pipeline failed, falling back to sync: {exc}")
+                use_async = False
+        
+        if not use_async:
+            if hasattr(self.context.vendor_enricher, 'enrich_with_scoring'):
+                (
+                    enriched_vendors,
+                    relevant_matches,
+                    all_scored_matches,
+                ) = self.context.vendor_enricher.enrich_with_scoring(
+                    profile=tender_profile,
+                    vendors=batch_vendors,
+                    scoring_fn=self.context.capability_matcher.score,
+                )
+                matches = (
+                    relevant_matches if relevant_matches else all_scored_matches
+                )
+            else:
+                enriched_vendors = self.context.vendor_enricher.enrich(batch_vendors)
+                all_scored_matches = self.context.capability_matcher.score(
+                    tender_profile, enriched_vendors
+                )
+                matches = all_scored_matches
 
         self._annotate_match_status(
             all_scored_matches,

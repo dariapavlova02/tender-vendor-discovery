@@ -22,16 +22,19 @@ class MockLLMProvider(LLMProvider):
     def generate(self, prompt: str, response_format=None, model=None) -> str:
         self.call_count += 1
         
-        if "VENDOR INFORMATION:" in prompt and "Tactical Uniforms Inc" in prompt:
-            return '{"score": 95, "rationale": "Specializes in tactical uniforms with 20+ years DHS experience"}'
+        if "VENDOR:" in prompt and "Tactical Uniforms Inc" in prompt:
+            return '{"score": 95, "rationale": "Band: Perfect Match — Evidence: \'tactical uniforms for DHS\' directly matches requirements", "confidence": "high"}'
         
-        if "VENDOR INFORMATION:" in prompt and "Generic Supplier" in prompt:
-            return '{"score": 70, "rationale": "General supplier with relevant product capabilities"}'
+        if "VENDOR:" in prompt and "Generic Supplier" in prompt:
+            return '{"score": 65, "rationale": "Band: Moderate Match — Evidence: \'various products and services\' shows capability but no specific alignment", "confidence": "medium"}'
         
-        if "VENDOR INFORMATION:" in prompt and "ammunition" in prompt:
-            return '{"score": 88, "rationale": "Leading ammunition manufacturer with frangible bullet expertise"}'
+        if "VENDOR:" in prompt and "ammunition" in prompt.lower():
+            return '{"score": 92, "rationale": "Band: Perfect Match — Evidence: \'ammunition manufacturer with frangible bullet expertise\' directly matches tender", "confidence": "high"}'
         
-        return '{"score": 70, "rationale": "General supplier with relevant product capabilities"}'
+        if "lobbying" in prompt.lower() or "Canadian Natural Gas Vehicle Alliance" in prompt:
+            return '{"score": 5, "rationale": "Band: No Match — Evidence: \'lobbying office\' is not a product supplier", "confidence": "high"}'
+        
+        return '{"score": 65, "rationale": "Band: Moderate Match — General capabilities detected", "confidence": "medium"}'
 
 
 def create_test_vendor(
@@ -105,7 +108,7 @@ def test_llm_capability_matching_basic():
     assert "tactical uniforms" in results[0].rationale.lower()
     assert results[0].vendor.company_name == "Tactical Uniforms Inc"
     
-    assert results[1].capability_match_score == 70
+    assert results[1].capability_match_score == 65
     assert results[1].vendor.company_name == "Generic Supplier"
     
     assert llm_provider.call_count == 2
