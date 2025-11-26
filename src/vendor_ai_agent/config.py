@@ -34,6 +34,27 @@ class LLMConfig:
 class DiscoveryConfig:
     target_results: int = 1000
     preferred_sources: List[str] = field(default_factory=lambda: ["static_directory"])
+    enable_apollo_discovery: bool = False
+    enable_apollo_booster: bool = False
+    apollo_min_candidates: int = 200
+    apollo_max_pages: int = 1
+    enable_serper_discovery: bool = True
+    serper_discovery_query_limit: int = 10
+    serper_max_queries: int = 50
+    serper_discovery_always_canada: bool = True
+    serper_use_places_api: bool = True
+    enable_batch_cache: bool = True
+    batch_size: int = 500
+    processing_batch: int = 1
+    max_government_source_percentage: float = 0.7
+
+    @property
+    def serper_discovery_trigger_threshold(self) -> int:
+        return int(self.target_results * 0.5)
+
+    @property
+    def min_relevant_candidates(self) -> int:
+        return int(self.target_results * 0.7)
 
 
 @dataclass
@@ -56,7 +77,7 @@ class EnrichmentConfig:
     enable_batch_quality_gates: bool = True
     enable_sampling_fallback: bool = True
     sample_positions: List[int] = field(default_factory=lambda: [150, 300])
-    relevance_score_threshold: float = 70.0
+    relevance_score_threshold: float = 40.0
     enable_website_search: bool = False
     enable_ddg_search: bool = True
     enable_serper_fallback: bool = True
@@ -91,6 +112,8 @@ class CapabilityMatchingConfig:
     scrape_timeout_seconds: int = 5
     max_content_chars: int = 3000
     fallback_to_rule_based: bool = True
+    llm_parallelism: int = 5
+    llm_batch_size: int = 5
 
 
 @dataclass
@@ -147,6 +170,9 @@ class RuntimeConfig:
     sam_api: SamApiConfig = field(default_factory=SamApiConfig)
     canada_open_data: CanadaOpenDataConfig = field(default_factory=CanadaOpenDataConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    
+    def __post_init__(self):
+        self.discovery.target_results = self.filtering.max_candidates
 
 
 paths = Paths()

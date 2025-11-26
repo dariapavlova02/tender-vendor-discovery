@@ -1,6 +1,7 @@
 """LLM-backed capability scoring of vendors."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Iterable, List, Optional
@@ -34,17 +35,27 @@ class CapabilityMatcher(CapabilityMatcherContract):
             if "website_content" in v.filtering_metadata
         ]
         
+        llm_results, llm_failures = self._assess_llm_parallel(profile, llm_eligible_vendors)
         llm_eligible_set = set(id(v) for v in llm_eligible_vendors)
-        
-        if self.config.enable_llm_assessment and llm_eligible_vendors and self.llm_provider:
-            self.logger.info(
-                f"LLM assessment: {len(llm_eligible_vendors)} vendors with website content available for evaluation"
-            )
-        
+
         for vendor in vendor_list:
+            if "website_content" not in vendor.filtering_metadata:
+                reason = vendor.filtering_metadata.get("scrape_error") or "No website content available"
+                vendor.filtering_metadata.setdefault("match_status", "needs_data")
+                vendor.filtering_metadata.setdefault("match_reason", reason)
+                continue
+
+            vendor_key = id(vendor)
+            if vendor_key in llm_results:
+                results.append(llm_results[vendor_key])
+                continue
+            if vendor_key in llm_failures:
+                if self.config.fallback_to_rule_based:
+                    results.append(self._rule_based_score(profile, vendor))
+                continue
             if (
-                self.config.enable_llm_assessment 
-                and id(vendor) in llm_eligible_set 
+                self.config.enable_llm_assessment
+                and vendor_key in llm_eligible_set
                 and self.llm_provider
             ):
                 try:
@@ -89,10 +100,33 @@ class CapabilityMatcher(CapabilityMatcherContract):
         
         tender_requirements = self._build_tender_requirements_summary(profile)
         
-        prompt = f"""You are evaluating whether a vendor is qualified for a government contract.
+        prompt = f"""SYSTEM ROLE:
+You are a procurement capability classifier. Use only the supplied tender requirements, structured metadata, and vendor website excerpt. Never invent agencies, capabilities, or performance proof that is not explicitly stated.
+
+SCORING CHECKLIST:
+1. Extract explicit evidence from tender requirements and vendor capabilities. Quote or tightly paraphrase snippets (prefix with Evidence: "...").
+2. Choose ONE rubric band (pick the lowest applicable) and justify it before emitting the numeric score:
+   - Specialist (90-100): purpose-built supplier with direct proof of delivering this scope.
+   - Credible overlap (60-89): strong overlap but minor gaps or indirect references.
+   - Partial fit (30-59): limited overlap, adjacent offerings, or missing key elements.
+   - No fit / insufficient data (0-29): no credible match or the website lacks relevant content.
+3. Apply structured metadata as boosts/penalties: past_winner and high total_contract_value support higher scores; enrichment_flags (high_value_supplier, frequent_supplier) add confidence; lack of matching website evidence or contradictory text forces insufficient_evidence=true and score < 30.
+4. If you cannot cite a concrete snippet supporting the scope, set insufficient_evidence=true, confidence="low", and keep score < 30 even if metadata looks positive.
+
+CONTEXT LIMITS:
+- Tender requirements truncated to 2,500 characters.
+- Website excerpt truncated to 2,500 characters.
+If crucial information is missing, state that in the rationale.
 
 TENDER REQUIREMENTS:
 {tender_requirements}
+
+STRUCTURED METADATA:
+- Past winner: {vendor.is_past_winner}
+- Total contract value: ${vendor.total_contract_value or 0:,.0f}
+- Contract count: {vendor.contract_count or 0}
+- Enrichment flags: {", ".join(vendor.enrichment_flags) if vendor.enrichment_flags else "None"}
+- Content source: {content_source}
 
 VENDOR INFORMATION:
 Company: {vendor.company_name}
@@ -102,21 +136,18 @@ Location: {vendor.location or "Unknown"}
 VENDOR CAPABILITIES (from website):
 {website_content[:2500]}
 
-CONTRACT HISTORY:
-- Past winner: {vendor.is_past_winner}
-- Total contract value: ${vendor.total_contract_value or 0:,.0f}
-- Contract count: {vendor.contract_count or 0}
-- Enrichment flags: {", ".join(vendor.enrichment_flags) if vendor.enrichment_flags else "None"}
-
 TASK:
-1. Assess this vendor's capability match for the tender requirements (0-100 score)
-2. Provide a one-sentence rationale with specific evidence from the vendor's capabilities
-3. Ground your assessment in the provided vendor information - do not hallucinate
+1. Determine the rubric band and explain why (e.g., "Band: Partial fit — ...").
+2. Score capability on a 0-100 scale using the rubric + metadata adjustments.
+3. Provide a concise rationale (<=60 words) that starts with the band and includes at least one evidence snippet from the vendor content or tender requirements (format Evidence: "...").
+4. Set confidence=high only when both metadata and website text align with tender needs; medium when partially supported; low when evidence is thin.
 
-Return valid JSON:
+Return strict JSON ONLY:
 {{
-  "score": 85,
-  "rationale": "Specializes in tactical uniforms with 20+ years DHS experience and in-house manufacturing"
+  "score": 0,
+  "rationale": "Band: No fit — Evidence: \"only offers office supplies\"; tender demands ammunition",
+  "confidence": "low",
+  "insufficient_evidence": true
 }}"""
         
         try:
@@ -144,6 +175,51 @@ Return valid JSON:
         except (json.JSONDecodeError, ValueError, KeyError) as exc:
             self.logger.error(f"Failed to parse LLM response for {vendor.company_name}: {exc}")
             raise
+
+    def _assess_llm_parallel(
+        self, profile: TenderProfile, vendors: List[VendorRecord]
+    ) -> tuple[dict[int, VendorMatchResult], set[int]]:
+        if not (
+            self.config.enable_llm_assessment
+            and vendors
+            and self.llm_provider
+        ):
+            return {}, set()
+
+        parallelism = max(1, getattr(self.config, "llm_parallelism", 5))
+
+        async def runner() -> tuple[dict[int, VendorMatchResult], set[int]]:
+            results: dict[int, VendorMatchResult] = {}
+            failures: set[int] = set()
+            semaphore = asyncio.Semaphore(parallelism)
+
+            async def run_for_vendor(vendor: VendorRecord) -> None:
+                async with semaphore:
+                    try:
+                        result = await asyncio.to_thread(
+                            self._llm_assess_capability, profile, vendor
+                        )
+                        results[id(vendor)] = result
+                    except Exception as exc:  # noqa: BLE001
+                        failures.add(id(vendor))
+                        self.logger.warning(
+                            "LLM assessment failed for %s (async batch): %s",
+                            vendor.company_name,
+                            exc,
+                        )
+
+            await asyncio.gather(*(run_for_vendor(v) for v in vendors))
+            return results, failures
+
+        try:
+            return asyncio.run(runner())
+        except RuntimeError:
+            # If already inside an event loop, create a new nested loop
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(runner())
+            finally:
+                loop.close()
     
     def _build_tender_requirements_summary(self, profile: TenderProfile) -> str:
         """
@@ -332,10 +408,10 @@ Return valid JSON:
             parts.append("extensive contract history (>$100M CAD)")
         
         if "frequent_supplier" in vendor.enrichment_flags:
-            parts.append("frequent government supplier (>50 contracts)")
+            parts.append("frequent supplier (>50 contracts)")
         
         if vendor.is_past_winner:
-            parts.append("proven government contractor")
+            parts.append("past contract experience")
         
         if vendor.location:
             parts.append(f"located in {vendor.location}")

@@ -69,7 +69,7 @@ class VendorEnricher(VendorEnricherContract):
         profile: TenderProfile,
         vendors: List[VendorRecord],
         scoring_fn: Callable[[TenderProfile, List[VendorRecord]], List[VendorMatchResult]]
-    ) -> tuple[List[VendorRecord], List[VendorMatchResult]]:
+    ) -> tuple[List[VendorRecord], List[VendorMatchResult], List[VendorMatchResult]]:
         """
         Enrich vendors in batches with LLM scoring and quality gates.
         
@@ -83,7 +83,7 @@ class VendorEnricher(VendorEnricherContract):
             self.logger.info("Batch quality gates disabled - enriching all vendors")
             enriched = self._enrich_all_parallel(vendors)
             scored = scoring_fn(profile, enriched)
-            return enriched, scored
+            return enriched, scored, scored
         
         self.logger.info(
             f"Starting batch enrichment: {len(vendors)} candidates, "
@@ -91,6 +91,7 @@ class VendorEnricher(VendorEnricherContract):
         )
         
         all_enriched: List[VendorRecord] = []
+        all_scored_results: List[VendorMatchResult] = []
         all_relevant_results: List[VendorMatchResult] = []
         total_enriched = 0
         current_position = 0
@@ -120,8 +121,9 @@ class VendorEnricher(VendorEnricherContract):
             batch_result = self._process_batch(profile, batch, scoring_fn, batch_num, total_enriched)
             
             all_enriched.extend(batch_result.enriched_vendors)
+            all_scored_results.extend(batch_result.scored_results)
             all_relevant_results.extend([
-                r for r in batch_result.scored_results 
+                r for r in batch_result.scored_results
                 if r.capability_match_score >= self.relevance_score_threshold
             ])
             total_enriched += len(batch_result.enriched_vendors)
@@ -132,27 +134,20 @@ class VendorEnricher(VendorEnricherContract):
                 f"total relevant so far: {len(all_relevant_results)}"
             )
             
-            if self.enable_batch_quality_gates:
-                should_continue, new_position = self._check_quality_gate(
-                    batch_result, current_position, batch_num, vendors
+            if self.enable_batch_quality_gates and batch_result.success_rate < self.min_batch_success_rate:
+                self.logger.warning(
+                    f"Low success rate in batch {batch_num}: {batch_result.success_rate:.1%}, "
+                    f"but continuing because target not reached ({len(all_relevant_results)}/{self.target_relevant_vendors})"
                 )
-                
-                if not should_continue:
-                    self.logger.warning(
-                        f"Stopping enrichment: quality gate failed at batch {batch_num}"
-                    )
-                    break
-                
-                current_position = new_position if new_position is not None else batch_end
-            else:
-                current_position = batch_end
+            
+            current_position = batch_end
         
         self.logger.info(
             f"Batch enrichment complete: enriched {total_enriched} vendors, "
             f"found {len(all_relevant_results)} relevant (score >= {self.relevance_score_threshold})"
         )
         
-        return all_enriched, all_relevant_results
+        return all_enriched, all_relevant_results, all_scored_results
     
     def _process_batch(
         self,
@@ -164,15 +159,31 @@ class VendorEnricher(VendorEnricherContract):
     ) -> BatchEnrichmentResult:
         """Enrich a single batch and score it."""
         enriched_batch = self._enrich_all_parallel(batch)
-        
-        scored_batch = scoring_fn(profile, enriched_batch)
+
+        content_ready, skipped_for_content = self._split_content_ready(enriched_batch)
+
+        if skipped_for_content:
+            self.logger.info(
+                "Skipping %s vendors with no website content before scoring",
+                len(skipped_for_content),
+            )
+
+        if not content_ready:
+            self.logger.warning(
+                "Batch %s has no vendors with website content; skipping scoring",
+                batch_num,
+            )
+            scored_batch = []
+        else:
+            scored_batch = scoring_fn(profile, content_ready)
         
         relevant = [
             r for r in scored_batch 
             if r.capability_match_score >= self.relevance_score_threshold
         ]
         
-        success_rate = len(relevant) / len(scored_batch) if scored_batch else 0.0
+        success_base = len(content_ready)
+        success_rate = len(relevant) / success_base if success_base else 0.0
         
         return BatchEnrichmentResult(
             enriched_vendors=enriched_batch,
@@ -280,6 +291,31 @@ class VendorEnricher(VendorEnricherContract):
                     enriched_dict[index] = vendors[index]
         
         return [enriched_dict[i] for i in range(len(vendors))]
+
+    def _split_content_ready(
+        self, vendors: List[VendorRecord]
+    ) -> tuple[List[VendorRecord], List[VendorRecord]]:
+        ready: List[VendorRecord] = []
+        missing: List[VendorRecord] = []
+
+        for vendor in vendors:
+            if vendor.filtering_metadata.get("website_content"):
+                ready.append(vendor)
+                continue
+
+            if not vendor.website:
+                reason = "No website URL"
+            elif vendor.filtering_metadata.get("scrape_error"):
+                reason = f"Website not captured: {vendor.filtering_metadata['scrape_error']}"
+            else:
+                reason = "No website content available"
+
+            vendor.filtering_metadata.setdefault("match_status", "needs_data")
+            vendor.filtering_metadata.setdefault("match_reason", reason)
+            vendor.filtering_metadata["skipped_for_scoring"] = True
+            missing.append(vendor)
+
+        return ready, missing
 
     def register_provider(self, provider: EnrichmentProvider) -> None:
         self.providers.append(provider)

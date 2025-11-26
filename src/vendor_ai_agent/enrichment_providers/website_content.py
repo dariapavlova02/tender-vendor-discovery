@@ -4,9 +4,24 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from urllib.parse import urlparse
+
 from ..models import VendorRecord
 from ..modules.website_scraper import WebsiteScraper
 from .base import BaseEnrichmentProvider
+
+SOCIAL_DOMAINS = {
+    "facebook.com",
+    "m.facebook.com",
+    "instagram.com",
+    "twitter.com",
+    "linkedin.com",
+    "ca.linkedin.com",
+    "zoominfo.com",
+    "mapquest.com",
+    "yelp.com",
+    "squarespace.com",
+}
 
 
 class WebsiteContentProvider(BaseEnrichmentProvider):
@@ -31,6 +46,19 @@ class WebsiteContentProvider(BaseEnrichmentProvider):
                 self.logger.debug(f"Vendor {vendor.company_name} already has scraped content")
             return vendor
         
+        domain = self._extract_domain(vendor.website)
+        if domain and self._is_social_domain(domain):
+            vendor.filtering_metadata["scrape_status"] = "ignored_social"
+            vendor.filtering_metadata["scrape_error"] = "Social profile link"
+            vendor.filtering_metadata["social_profile_url"] = vendor.website
+            if self.logger:
+                self.logger.info(
+                    "Skipping website scrape for %s: social profile (%s)",
+                    vendor.company_name,
+                    domain,
+                )
+            return vendor
+
         try:
             result = self.scraper.scrape(vendor.website)
             
@@ -63,3 +91,20 @@ class WebsiteContentProvider(BaseEnrichmentProvider):
                 )
         
         return vendor
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        try:
+            parsed = urlparse(url)
+            host = parsed.netloc.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            return host
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _is_social_domain(host: str) -> bool:
+        if host in SOCIAL_DOMAINS:
+            return True
+        return any(host.endswith(f".{base}") for base in SOCIAL_DOMAINS)

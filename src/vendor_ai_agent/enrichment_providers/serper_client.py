@@ -29,6 +29,7 @@ class SerperClient:
         self.api_key = api_key
         self.timeout = timeout
         self.base_url = "https://google.serper.dev/search"
+        self.places_url = "https://google.serper.dev/places"
         self.logger = logging.getLogger(__name__)
         
         self.email_pattern = re.compile(
@@ -39,14 +40,16 @@ class SerperClient:
         )
     
     def search_company(
-        self, 
-        company_name: str, 
-        include_contacts: bool = True
+        self,
+        company_name: str,
+        include_contacts: bool = True,
+        query: Optional[str] = None,
     ) -> SerperResult:
-        if include_contacts:
-            query = f"{company_name} official website contact email phone"
-        else:
-            query = f"{company_name} official website"
+        if query is None:
+            if include_contacts:
+                query = f"{company_name} official website contact email phone"
+            else:
+                query = f"{company_name} official website"
         
         self.logger.debug(f"Serper query: {query}")
         
@@ -167,3 +170,53 @@ class SerperClient:
             return True
         
         return False
+    
+    def discovery_search(self, query: str, num_results: int = 10) -> dict:
+        self.logger.debug(f"Serper discovery query: {query}")
+        
+        try:
+            response = requests.post(
+                self.base_url,
+                headers={
+                    "X-API-KEY": self.api_key,
+                    "Content-Type": "application/json"
+                },
+                json={"q": query, "num": num_results},
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Serper discovery API error: {e}")
+            return {"organic": []}
+    
+    def places_search(self, query: str, num_results: int = 10, location: Optional[str] = None, gl: Optional[str] = None) -> dict:
+        self.logger.debug(f"Serper places query: {query}")
+        
+        try:
+            payload = {"q": query, "num": num_results}
+            
+            if location:
+                payload["location"] = location
+                self.logger.debug(f"  Location filter: {location}")
+            
+            if gl:
+                payload["gl"] = gl
+                self.logger.debug(f"  Country code (gl): {gl}")
+            
+            response = requests.post(
+                self.places_url,
+                headers={
+                    "X-API-KEY": self.api_key,
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Serper places API error: {e}")
+            return {"places": []}

@@ -128,26 +128,28 @@ class ContactExtractor:
         
         truncated = text[:2000]
         
-        prompt = f"""Extract contact information from this webpage text.
+        prompt = f"""SYSTEM ROLE:
+Extract vendor-owned contact channels from the snippet below. Ignore distributor/partner details or third-party references. If nothing valid remains, return empty arrays.
 
-TEXT:
+TEXT (trimmed to 2,000 chars):
 {truncated}
 
-Output JSON with this structure:
+OUTPUT REQUIREMENTS:
+- emails: lowercase company addresses only (same domain as vendor when possible). Exclude noreply/admin/gov domains unless the vendor is a government agency.
+- phones: digits only, prefixed with "+" and country code (e.g., +18885551234). Provide up to 3 unique numbers.
+- contact_names: keep honorifics/titles ("Dr.", "Capt.") when given; up to 3 names.
+- source_hint: label where you found the info (Header, Footer, Body, Sidebar, ContactCard, Unknown).
+- notes: short explanation if lists are empty (e.g., "only contact form").
+- Keep at most 3 items per list. If nothing survives filtering, return [] and explain in notes.
+
+Return compact JSON ONLY:
 {{
-    "emails": ["email1@example.com", "email2@example.com"],
-    "phones": ["+1-555-123-4567", "+1-555-987-6543"],
-    "contact_names": ["John Smith", "Jane Doe"]
-}}
-
-Rules:
-- Skip noreply@, webmaster@, test@, etc.
-- Prioritize sales@, contact@, info@ emails
-- Normalize US phones to +1-XXX-XXX-XXXX format
-- Extract only real person names (not company names)
-- If nothing found, return empty arrays
-
-Output ONLY the JSON, no explanation."""
+  "emails": ["sales@example.com"],
+  "phones": ["+18885551234"],
+  "contact_names": ["Capt. Jane Doe"],
+  "source_hint": "Footer",
+  "notes": "direct email listed"
+}}"""
 
         try:
             response = self.llm_provider.generate(prompt, response_format="json")

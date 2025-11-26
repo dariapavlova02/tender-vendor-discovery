@@ -85,10 +85,9 @@ class OpenAIProvider(LLMProvider):
             if response_format == "json":
                 params["response_format"] = {"type": "json_object"}
             
-            # Enable flex tier if configured (50% discount, slower)
+            # Enable flex tier if configured (50% discount, slower response SLA)
             if self.use_flex_tier:
-                params["store"] = True
-                params["metadata"] = {"tier": "flex"}
+                params["service_tier"] = "flex"
             
             response = self.client.chat.completions.create(**params)
             

@@ -7,6 +7,7 @@ from typing import Optional
 from ..database import Vendor, VendorContact, get_session
 from ..models import VendorRecord
 from .base import BaseEnrichmentProvider
+from .utils import filter_emails_for_vendor
 
 
 class SamContactProvider(BaseEnrichmentProvider):
@@ -40,10 +41,17 @@ class SamContactProvider(BaseEnrichmentProvider):
             contact = contacts[0]
             
             if contact.email:
-                vendor.email = contact.email
-                vendor.filtering_metadata["email_source"] = "sam_gov_poc"
-                vendor.filtering_metadata["email_confidence"] = 0.85
-                self.logger.info(f"  ✓ Found SAM POC email: {contact.email}")
+                filtered = filter_emails_for_vendor(vendor, [contact.email])
+                if filtered:
+                    vendor.email = filtered[0]
+                    vendor.filtering_metadata["email_source"] = "sam_gov_poc"
+                    vendor.filtering_metadata["email_confidence"] = 0.85
+                    self.logger.info(f"  ✓ Found SAM POC email: {filtered[0]}")
+                else:
+                    self.logger.info(
+                        "  ↩️ SAM POC email skipped (non-company domain): %s",
+                        contact.email,
+                    )
             
             if contact.phone:
                 vendor.phone = contact.phone

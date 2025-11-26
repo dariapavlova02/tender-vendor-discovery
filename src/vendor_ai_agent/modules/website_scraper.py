@@ -374,11 +374,30 @@ class WebsiteScraper:
         
         soup = BeautifulSoup(response.content, "html.parser")
         
+        mailto_text = self._extract_mailto_links(soup)
+
         for element in soup(["script", "style", "iframe"]):
             element.decompose()
         
         text = soup.get_text(separator=" ", strip=True)
-        
+        if mailto_text:
+            text = f"{text} {' '.join(mailto_text)}"
+
         cleaned = " ".join(text.split())
-        
+
         return cleaned
+
+    @staticmethod
+    def _extract_mailto_links(soup: BeautifulSoup) -> List[str]:
+        mailtos: List[str] = []
+        for anchor in soup.find_all("a", href=True):
+            href = anchor["href"].strip()
+            if href.lower().startswith("mailto:"):
+                email = href[7:].split("?")[0]
+                if email:
+                    mailtos.append(email)
+        for elem in soup.find_all(attrs={"data-email": True}):
+            email = elem.get("data-email")
+            if email:
+                mailtos.append(email)
+        return mailtos

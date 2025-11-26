@@ -376,5 +376,8 @@ class PipelineArtifacts:
     raw_vendors: List[VendorRecord]
     enriched_vendors: List[VendorRecord]
     final_matches: List[VendorMatchResult]
+    all_matches: List[VendorMatchResult] = field(default_factory=list)
     filtered_vendors: List[VendorRecord] = field(default_factory=list)
     filtering_metrics: Optional[FilteringMetrics] = None
+    batch_id: int = 1
+    processed_batches: List[int] = field(default_factory=list)

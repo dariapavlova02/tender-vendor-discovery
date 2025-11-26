@@ -1,8 +1,9 @@
 """High-level orchestration for the Tender Vendor AI Agent."""
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -18,7 +19,14 @@ from .contracts import (
 )
 from .ingestion import TenderIngestionRouter
 from .ingestion.models import TenderIngestionRequest
-from .models import PipelineArtifacts, TenderProfile, TenderSection, VendorMatchResult
+from .models import (
+    PipelineArtifacts,
+    TenderProfile,
+    TenderSection,
+    VendorMatchResult,
+    VendorRecord,
+    ContactInfo,
+)
 from .modules import (
     CapabilityMatcher,
     DocumentFetcher,
@@ -34,7 +42,7 @@ from .modules import (
 
 
 from .sources.sam_entity import SamEntitySource
-from .sources import CanadaContractsVendorSource
+from .sources import CanadaContractsVendorSource, StaticDirectorySource, ApolloSearchSource, SerperVendorSource
 from .database.connection import get_session
 from .enrichment_providers import WebsiteContentProvider
 
@@ -85,6 +93,33 @@ class TenderVendorPipeline:
             logging.info("Canada Contracts source initialized successfully")
         except Exception as exc:
             logging.warning("Failed to initialize Canada Contracts source: %s", exc)
+
+        if cfg.discovery.enable_apollo_discovery and cfg.apollo_api_key:
+            try:
+                apollo_source = ApolloSearchSource(
+                    api_key=cfg.apollo_api_key,
+                    max_pages=cfg.discovery.apollo_max_pages
+                )
+                sources.append(apollo_source)
+                logging.info("Apollo primary discovery source initialized successfully")
+            except Exception as exc:
+                logging.warning("Failed to initialize Apollo discovery source: %s", exc)
+        elif cfg.discovery.enable_serper_discovery and cfg.serper_api_key:
+            try:
+                serper_source = SerperVendorSource(
+                    api_key=cfg.serper_api_key,
+                    query_limit=cfg.discovery.serper_discovery_query_limit,
+                    config=cfg
+                )
+                sources.append(serper_source)
+                logging.info("Serper discovery source initialized successfully")
+            except Exception as exc:
+                logging.warning("Failed to initialize Serper discovery source: %s", exc)
+
+        # Always register the static directory as a resilience fallback so tests and
+        # offline environments still yield candidate vendors.
+        sources.append(StaticDirectorySource())
+        logging.debug("StaticDirectorySource registered as fallback vendor provider")
         
         # Initialize enrichment providers
         enrichment_providers = []
@@ -135,7 +170,7 @@ class TenderVendorPipeline:
                 batch_size=cfg.enrichment.batch_size,
                 min_batch_success_rate=cfg.enrichment.min_batch_success_rate,
                 max_enrichment_batches=cfg.enrichment.max_enrichment_batches,
-                target_relevant_vendors=cfg.enrichment.target_relevant_vendors,
+                target_relevant_vendors=int(cfg.filtering.max_candidates * 0.7),
                 enable_batch_quality_gates=cfg.enrichment.enable_batch_quality_gates,
                 enable_sampling_fallback=cfg.enrichment.enable_sampling_fallback,
                 sample_positions=cfg.enrichment.sample_positions,
@@ -174,35 +209,143 @@ class TenderVendorPipeline:
                 request_to_use, file_list, auto_generated=auto_generated
             )
         
-        try:
-            discovered_vendors = self.context.vendor_discovery.discover(tender_profile)
-        except Exception as e:
-            raise Exception(f"Vendor discovery failed: {e}")
-        
-        filtered_vendors = self.context.vendor_filter.filter(tender_profile, discovered_vendors)
-        filtering_metrics = self.context.vendor_filter.get_metrics()
-        
-        if hasattr(self.context.vendor_enricher, 'enrich_with_scoring'):
-            enriched_vendors, relevant_matches = self.context.vendor_enricher.enrich_with_scoring(
-                profile=tender_profile,
-                vendors=filtered_vendors,
-                scoring_fn=self.context.capability_matcher.score
+        cfg = self.context.config
+        use_cache = cfg.discovery.enable_batch_cache
+        processing_batch = max(1, cfg.discovery.processing_batch)
+        cached_bundle = None
+        filtered_vendors: Optional[List[VendorRecord]] = None
+        filtered_from_cache = False
+        cached_processed_batches: List[int] = []
+
+        if use_cache and processing_batch > 1:
+            cached_bundle = self._load_cached_vendors(tender_profile)
+            if cached_bundle:
+                filtered_vendors = cached_bundle.get("vendors", [])
+                cached_processed_batches = cached_bundle.get("processed_batches", [])
+                filtered_from_cache = True
+                logging.info(
+                    "Loaded %s cached vendors for batch %s",
+                    len(filtered_vendors),
+                    processing_batch,
+                )
+
+        if filtered_vendors is None:
+            try:
+                discovered_vendors = self.context.vendor_discovery.discover(tender_profile)
+            except Exception as e:
+                raise Exception(f"Vendor discovery failed: {e}")
+
+            self._log_discovery_metrics(discovered_vendors)
+
+            discovered_vendors = self._maybe_run_serper_discovery(
+                tender_profile, discovered_vendors
             )
-            matches = relevant_matches if relevant_matches else self.context.capability_matcher.score(
-                tender_profile, enriched_vendors
+
+            discovered_vendors = self._maybe_run_apollo_booster(
+                tender_profile, discovered_vendors
+            )
+
+            if not discovered_vendors:
+                logging.warning(
+                    "Vendor discovery returned no candidates; generating fallback directory vendors"
+                )
+                fallback_source = StaticDirectorySource()
+                discovered_vendors = fallback_source.search(tender_profile)
+                self._log_discovery_metrics(discovered_vendors, note="fallback_static")
+
+            filtered_vendors = self.context.vendor_filter.filter(
+                tender_profile, discovered_vendors
+            )
+            filtering_metrics = self.context.vendor_filter.get_metrics()
+            self._log_filtering_metrics(filtering_metrics)
+
+            filtered_vendors = self._ensure_min_candidates_after_filter(
+                tender_profile, filtered_vendors
+            )
+
+            if use_cache:
+                self._write_vendor_cache(tender_profile, filtered_vendors)
+        else:
+            discovered_vendors = filtered_vendors
+            filtering_metrics = None
+        
+        batch_vendors, batch_info = self._select_batch_vendors(
+            filtered_vendors,
+            cached_processed_batches,
+        )
+
+        if not batch_vendors:
+            logging.warning(
+                "Batch %s returned no vendors to process",
+                batch_info["batch_id"],
+            )
+            return PipelineArtifacts(
+                tender_sections=sections,
+                tender_profile=tender_profile,
+                raw_vendors=filtered_vendors,
+                enriched_vendors=[],
+                filtered_vendors=[],
+                filtering_metrics=filtering_metrics,
+                final_matches=[],
+                all_matches=[],
+                batch_id=batch_info["batch_id"],
+                processed_batches=batch_info["processed_batches"],
+            )
+
+        all_scored_matches: List[VendorMatchResult]
+        if hasattr(self.context.vendor_enricher, 'enrich_with_scoring'):
+            (
+                enriched_vendors,
+                relevant_matches,
+                all_scored_matches,
+            ) = self.context.vendor_enricher.enrich_with_scoring(
+                profile=tender_profile,
+                vendors=batch_vendors,
+                scoring_fn=self.context.capability_matcher.score,
+            )
+            matches = (
+                relevant_matches if relevant_matches else all_scored_matches
             )
         else:
-            enriched_vendors = self.context.vendor_enricher.enrich(filtered_vendors)
-            matches = self.context.capability_matcher.score(tender_profile, enriched_vendors)
-        
+            enriched_vendors = self.context.vendor_enricher.enrich(batch_vendors)
+            all_scored_matches = self.context.capability_matcher.score(
+                tender_profile, enriched_vendors
+            )
+            matches = all_scored_matches
+
+        self._annotate_match_status(
+            all_scored_matches,
+            threshold=self.context.vendor_enricher.relevance_score_threshold,
+            batch_id=batch_info["batch_id"],
+        )
+
+        self._log_enrichment_metrics(enriched_vendors)
+        self._log_matching_metrics(self.context.capability_matcher)
+
+        if use_cache:
+            self._update_cache_batches(
+                tender_profile,
+                batch_info["processed_batches"]
+                + ([batch_info["batch_id"]]
+                   if batch_info["batch_id"]
+                   not in batch_info["processed_batches"]
+                   else []),
+            )
+        processed_batches_view = sorted(
+            set(batch_info["processed_batches"] + [batch_info["batch_id"]])
+        )
+
         return PipelineArtifacts(
             tender_sections=sections,
             tender_profile=tender_profile,
-            raw_vendors=discovered_vendors,
+            raw_vendors=filtered_vendors,
             enriched_vendors=enriched_vendors,
-            filtered_vendors=filtered_vendors,
+            filtered_vendors=batch_vendors,
             filtering_metrics=filtering_metrics,
             final_matches=matches,
+            all_matches=all_scored_matches,
+            batch_id=batch_info["batch_id"],
+            processed_batches=processed_batches_view,
         )
 
     def _hydrate_from_ingestion(
@@ -266,3 +409,317 @@ class TenderVendorPipeline:
             self.context.output_generator.to_csv(matches, output_dir / f"{final_name}.csv")
         if output_config.include_json:
             self.context.output_generator.to_json(matches, output_dir / f"{final_name}.json")
+
+    def _maybe_run_serper_discovery(
+        self,
+        profile: TenderProfile,
+        vendors: List[VendorRecord],
+    ) -> List[VendorRecord]:
+        cfg = self.context.config
+        
+        GOVERNMENT_SOURCES = {
+            "sam_entity", 
+            "canada_contracts", 
+            "canada_award_notices",
+            "canada_odbus", 
+            "canada_pspc_payments", 
+            "canada_sosa"
+        }
+        
+        max_candidates = cfg.filtering.max_candidates
+        max_govt_vendors = int(max_candidates * cfg.discovery.max_government_source_percentage)
+        
+        govt_vendors = [v for v in vendors if v.source in GOVERNMENT_SOURCES]
+        non_govt_vendors = [v for v in vendors if v.source not in GOVERNMENT_SOURCES]
+        
+        if len(govt_vendors) > max_govt_vendors:
+            logging.info(
+                "Government vendors exceed cap: %s > %s (%.0f%% limit). "
+                "Cutting to %s government vendors.",
+                len(govt_vendors),
+                max_govt_vendors,
+                cfg.discovery.max_government_source_percentage * 100,
+                max_govt_vendors,
+            )
+            govt_vendors = govt_vendors[:max_govt_vendors]
+        
+        vendors = govt_vendors + non_govt_vendors
+        current_count = len(vendors)
+        deficit = max(0, max_candidates - current_count)
+        
+        should_use_serper = (
+            cfg.discovery.enable_serper_discovery
+            and cfg.serper_api_key
+            and deficit > 0
+        )
+        
+        if not should_use_serper:
+            if current_count >= max_candidates:
+                logging.info(
+                    "Serper discovery skipped: %s vendors >= max_candidates %s",
+                    current_count,
+                    max_candidates,
+                )
+            return vendors
+
+        logging.info(
+            "Serper discovery triggered: %s vendors, need %s more to reach %s",
+            current_count,
+            deficit,
+            max_candidates,
+        )
+        
+        try:
+            serper_source = SerperVendorSource(
+                api_key=cfg.serper_api_key,
+                query_limit=cfg.discovery.serper_max_queries,
+                config=cfg
+            )
+            serper_vendors = serper_source.search(profile, target_count=deficit)
+            if serper_vendors:
+                self._log_discovery_metrics(serper_vendors, note="serper_primary")
+                vendors = vendors + serper_vendors
+                logging.info(
+                    "After Serper: %s total vendors (%s added)",
+                    len(vendors),
+                    len(serper_vendors),
+                )
+        except Exception as exc:
+            logging.warning("Serper fallback failed: %s", exc)
+        
+        return vendors
+
+    def _maybe_run_apollo_booster(
+        self,
+        profile: TenderProfile,
+        vendors: List[VendorRecord],
+    ) -> List[VendorRecord]:
+        cfg = self.context.config
+        should_boost = (
+            cfg.discovery.enable_apollo_booster
+            and cfg.apollo_api_key
+            and len(vendors) < cfg.discovery.apollo_min_candidates
+        )
+        if not should_boost:
+            return vendors
+
+        logging.info(
+            "Apollo booster enabled: %s vendors < min %s, fetching additional candidates",
+            len(vendors),
+            cfg.discovery.apollo_min_candidates,
+        )
+        booster = ApolloSearchSource(
+            api_key=cfg.apollo_api_key,
+            max_pages=cfg.discovery.apollo_max_pages,
+        )
+        apollo_vendors = booster.search(profile)
+        if apollo_vendors:
+            self._log_discovery_metrics(apollo_vendors, note="apollo_booster")
+            vendors = vendors + apollo_vendors
+        return vendors
+
+    def _ensure_min_candidates_after_filter(
+        self, profile: TenderProfile, vendors: List[VendorRecord]
+    ) -> List[VendorRecord]:
+        cfg = self.context.config
+        min_candidates = cfg.discovery.min_relevant_candidates
+        if len(vendors) >= min_candidates:
+            return vendors
+
+        logging.info(
+            "Post-filter candidates below target (%s < %s). Fetching additional vendors via Serper/Apollo.",
+            len(vendors),
+            min_candidates,
+        )
+
+        vendors = self._maybe_run_serper_discovery(profile, vendors)
+        if len(vendors) >= min_candidates:
+            return vendors
+
+        vendors = self._maybe_run_apollo_booster(profile, vendors)
+        return vendors
+
+    def _log_discovery_metrics(self, vendors: List[VendorRecord], note: str | None = None) -> None:
+        from collections import Counter
+
+        total = len(vendors)
+        if total == 0:
+            logging.info("[Discovery] no vendors discovered%s",
+                         f" ({note})" if note else "")
+            return
+        counts = Counter(v.source or "unknown" for v in vendors)
+        logging.info("[Discovery] %s vendors (by source: %s)%s",
+                     total,
+                     ", ".join(f"{src}:{cnt}" for src, cnt in counts.items()),
+                     f" ({note})" if note else "")
+
+    def _log_filtering_metrics(self, metrics) -> None:
+        if not metrics:
+            return
+        logging.info(
+            "[Filtering] total=%s, duplicates=%s, geo=%s, eligibility=%s, final=%s",
+            metrics.total_input,
+            metrics.duplicates_removed,
+            metrics.geo_filtered,
+            metrics.eligibility_filtered,
+            metrics.final_count,
+        )
+
+    def _log_enrichment_metrics(self, vendors: List[VendorRecord]) -> None:
+        total = len(vendors)
+        if total == 0:
+            logging.info("[Enrichment] no vendors to enrich")
+            return
+        email = sum(1 for v in vendors if v.email)
+        phone = sum(1 for v in vendors if v.phone)
+        website = sum(1 for v in vendors if v.website)
+        website_content = sum(1 for v in vendors if "website_content" in v.filtering_metadata)
+        logging.info(
+            "[Enrichment] total=%s, email=%s, phone=%s, website=%s, website_content=%s",
+            total,
+            email,
+            phone,
+            website,
+            website_content,
+        )
+
+    def _log_matching_metrics(self, matcher: CapabilityMatcher) -> None:
+        if not hasattr(matcher, "get_metrics"):
+            return
+        metrics = matcher.get_metrics()
+        if not metrics:
+            return
+        logging.info(
+            "[Matching] total=%s, llm_attempted=%s, llm_success=%s, rule_based=%s, scraped_fallbacks=%s, metadata_fallbacks=%s",
+            metrics.total_vendors,
+            metrics.llm_attempted,
+            metrics.llm_succeeded,
+            metrics.rule_based,
+            metrics.scraped_fallbacks,
+            metrics.metadata_fallbacks,
+        )
+
+    def _annotate_match_status(
+        self, matches: List[VendorMatchResult], threshold: float, batch_id: int
+    ) -> None:
+        for match in matches:
+            vendor = match.vendor
+            status: str
+            reason: str
+            if match.capability_match_score >= threshold:
+                status = "selected"
+                reason = f"Meets score threshold ({match.capability_match_score:.1f})"
+            else:
+                status = "needs_review"
+                scrape_error = vendor.filtering_metadata.get("scrape_error")
+                if scrape_error:
+                    reason = f"Website not captured: {scrape_error}"
+                elif not vendor.filtering_metadata.get("website_content"):
+                    reason = "No website content available"
+                elif not vendor.email and not vendor.phone:
+                    reason = "Missing contact details"
+                else:
+                    reason = f"Score below threshold ({match.capability_match_score:.1f})"
+
+            vendor.filtering_metadata["match_status"] = status
+            vendor.filtering_metadata["match_reason"] = reason
+            vendor.filtering_metadata.setdefault("batch", batch_id)
+
+    def _select_batch_vendors(
+        self,
+        vendors: List[VendorRecord],
+        processed_batches: List[int],
+    ) -> tuple[List[VendorRecord], dict]:
+        cfg = self.context.config
+        batch_size = cfg.discovery.batch_size or cfg.filtering.max_candidates or len(vendors)
+        batch_size = max(1, batch_size)
+        batch_id = max(1, cfg.discovery.processing_batch)
+
+        for idx, vendor in enumerate(vendors):
+            vendor.filtering_metadata.setdefault("batch", (idx // batch_size) + 1)
+
+        start = (batch_id - 1) * batch_size
+        end = start + batch_size
+        batch_slice = vendors[start:end]
+
+        info = {
+            "batch_id": batch_id,
+            "processed_batches": processed_batches,
+            "batch_size": batch_size,
+        }
+        return batch_slice, info
+
+    def _write_vendor_cache(
+        self, profile: TenderProfile, vendors: List[VendorRecord]
+    ) -> None:
+        path = self._get_cache_path(profile)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "tender_id": self._cache_key(profile),
+            "batch_size": self.context.config.discovery.batch_size
+            or self.context.config.filtering.max_candidates
+            or len(vendors),
+            "processed_batches": [],
+            "vendors": [asdict(v) for v in vendors],
+        }
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+    def _load_cached_vendors(self, profile: TenderProfile):
+        path = self._get_cache_path(profile)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            logging.warning("Cache file corrupted, ignoring: %s", path)
+            return None
+
+        vendor_dicts = data.get("vendors", [])
+        vendors = [self._vendor_from_dict(v) for v in vendor_dicts]
+        return {
+            "vendors": vendors,
+            "processed_batches": data.get("processed_batches", []),
+            "batch_size": data.get("batch_size"),
+        }
+
+    def _update_cache_batches(
+        self, profile: TenderProfile, processed_batches: List[int]
+    ) -> None:
+        if not processed_batches:
+            return
+        path = self._get_cache_path(profile)
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            logging.warning("Cache file corrupted, cannot update batches: %s", path)
+            return
+        existing = set(data.get("processed_batches", []))
+        for batch_id in processed_batches:
+            if batch_id:
+                existing.add(batch_id)
+        data["processed_batches"] = sorted(existing)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+    def _get_cache_path(self, profile: TenderProfile) -> Path:
+        cache_dir = paths.output_dir / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        key = self._cache_key(profile)
+        return cache_dir / f"{key}_vendors.json"
+
+    def _cache_key(self, profile: TenderProfile) -> str:
+        if profile.tender_id:
+            return profile.tender_id.replace("/", "-")
+        reference = (
+            profile.doc_extracted.structured.reference_number
+            if profile.doc_extracted
+            else None
+        )
+        return (reference or "manual").replace("/", "-")
+
+    def _vendor_from_dict(self, payload: dict) -> VendorRecord:
+        contact_data = payload.get("primary_contact")
+        if contact_data:
+            payload["primary_contact"] = ContactInfo(**contact_data)
+        return VendorRecord(**payload)

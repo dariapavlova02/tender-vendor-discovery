@@ -1,15 +1,18 @@
 """Contact scraping enrichment provider that extracts emails/phones from vendor websites."""
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Optional
+from typing import List, Optional
+from urllib.parse import urlparse
 
 from ..models import VendorRecord
 from ..modules.contact_extractor import ContactExtractor
 from ..modules.tender_profiler import LLMProvider
-from ..modules.website_scraper import WebsiteScraper
+from ..modules.async_website_scraper import AsyncWebsiteScraper
 from .base import BaseEnrichmentProvider
 from .serper_client import SerperClient
+from .utils import filter_emails_for_vendor
 
 
 class ContactScrapingProvider(BaseEnrichmentProvider):
@@ -22,7 +25,12 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         enable_targeted_serper: bool = True
     ) -> None:
         super().__init__(name="contact_scraping")
-        self.scraper = WebsiteScraper(timeout_seconds=scraper_timeout)
+        self.scraper = AsyncWebsiteScraper(
+            timeout_seconds=scraper_timeout,
+            max_concurrent_global=50,
+            max_concurrent_per_domain=2,
+            enable_cache=True
+        )
         self.extractor = ContactExtractor(llm_provider=llm_provider)
         self.enable_llm_fallback = enable_llm_fallback
         self.serper_client = serper_client
@@ -40,10 +48,21 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         
         self.logger.info(f"Scraping contacts for {vendor.company_name} ({vendor.website})")
         
-        contacts = self.scraper.scrape_contacts(
-            vendor.website, 
-            self.extractor
-        )
+        scrape_results = self.scraper.scrape_contacts_batch_sync([vendor.website])
+        
+        if vendor.website not in scrape_results:
+            self.logger.warning(f"No scrape result for {vendor.website}")
+            contacts = self.extractor.extract("", use_llm_fallback=False)
+        else:
+            scrape_result = scrape_results[vendor.website]
+            if scrape_result.status != "success" or not scrape_result.contact_text:
+                self.logger.warning(f"Contact scrape failed: {scrape_result.status}")
+                contacts = self.extractor.extract("", use_llm_fallback=False)
+            else:
+                contacts = self.extractor.extract(
+                    scrape_result.contact_text, 
+                    use_llm_fallback=self.enable_llm_fallback
+                )
         
         if contacts.emails:
             vendor.email = contacts.emails[0]
@@ -85,30 +104,44 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
     def _apply_backup_contacts(self, vendor: VendorRecord) -> None:
         backup_emails = vendor.filtering_metadata.get('serper_backup_emails')
         if backup_emails:
-            vendor.email = backup_emails[0]
+            filtered = filter_emails_for_vendor(vendor, backup_emails)
+            if not filtered:
+                return
+            vendor.email = filtered[0]
             vendor.filtering_metadata["email_source"] = "serper_backup"
             vendor.filtering_metadata["email_confidence"] = 0.7
-            vendor.filtering_metadata["all_emails"] = backup_emails
-            self.logger.info(f"  ✓ Level 2: Using {len(backup_emails)} backup emails from Serper snippets")
+            vendor.filtering_metadata["all_emails"] = filtered
+            self.logger.info(f"  ✓ Level 2: Using {len(filtered)} filtered backup emails from Serper snippets")
     
     def _targeted_serper_search(self, vendor: VendorRecord) -> None:
+        if not self.serper_client:
+            return
+        
+        serper = self.serper_client
+        filtered: List[str] = []
         try:
             self.logger.info(f"  → Level 3: Targeted Serper search for contacts")
-            query = f"{vendor.company_name} email contact"
-            if vendor.city:
-                query += f" {vendor.city}"
+            query = self._build_serper_query(vendor)
             
-            result = self.serper_client.search_company(
-                company_name=query,
-                include_contacts=True
+            result = serper.search_company(
+                company_name=vendor.company_name,
+                include_contacts=True,
+                query=query,
             )
             
             if result.contacts and result.contacts.emails:
-                vendor.email = result.contacts.emails[0]
-                vendor.filtering_metadata["email_source"] = "serper_targeted"
-                vendor.filtering_metadata["email_confidence"] = 0.6
-                vendor.filtering_metadata["all_emails"] = result.contacts.emails
-                self.logger.info(f"  ✓ Level 3: Found {len(result.contacts.emails)} emails via targeted Serper")
+                filtered = filter_emails_for_vendor(vendor, result.contacts.emails)
+                if filtered:
+                    vendor.email = filtered[0]
+                    vendor.filtering_metadata["email_source"] = "serper_targeted"
+                    vendor.filtering_metadata["email_confidence"] = 0.6
+                    vendor.filtering_metadata["all_emails"] = filtered
+                    self.logger.info(
+                        f"  ✓ Level 3: Found {len(filtered)} filtered emails via targeted Serper"
+                    )
+
+            if result.contacts and result.contacts.emails and not filtered:
+                self.logger.info("  ↩️ Serper returned only generic emails, skipped")
             
             if result.contacts and result.contacts.phones and not vendor.phone:
                 vendor.phone = result.contacts.phones[0]
@@ -136,3 +169,29 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         )
         
         return has_real_email or has_real_phone
+
+    def _build_serper_query(self, vendor: VendorRecord) -> str:
+        domain = self._extract_domain(vendor.website)
+        base = f'"{vendor.company_name}"'
+        if domain:
+            query = f"site:{domain} (\"contact\" OR \"email\" OR \"support\") {base}"
+        else:
+            query = f"{base} email contact"
+        if vendor.city:
+            query += f' "{vendor.city}"'
+        if vendor.state:
+            query += f' "{vendor.state}"'
+        return query
+
+    @staticmethod
+    def _extract_domain(url: Optional[str]) -> str:
+        if not url:
+            return ""
+        try:
+            parsed = urlparse(url)
+            host = parsed.netloc.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            return host
+        except Exception:
+            return ""

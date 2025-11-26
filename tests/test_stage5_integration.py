@@ -16,7 +16,6 @@ def test_stage5_integration():
     config = RuntimeConfig()
     config.capability_matching = CapabilityMatchingConfig(
         enable_llm_assessment=True,
-        max_llm_evaluations=10,  # Small number for testing
         llm_model="gpt-5-mini",
         enable_website_scraping=True,
         scrape_timeout_seconds=5,
@@ -30,7 +29,7 @@ def test_stage5_integration():
     # Verify configuration
     assert pipeline.context.config.capability_matching.enable_llm_assessment
     assert pipeline.context.config.capability_matching.enable_website_scraping
-    assert pipeline.context.config.capability_matching.max_llm_evaluations == 10
+    assert pipeline.context.config.capability_matching.enable_llm_assessment
     
     # Verify enrichment providers
     enrichers = pipeline.context.vendor_enricher.providers
@@ -41,12 +40,12 @@ def test_stage5_integration():
     matcher = pipeline.context.capability_matcher
     assert matcher.config.enable_llm_assessment
     assert matcher.config.enable_website_scraping
-    assert matcher.config.max_llm_evaluations == 10
+    assert matcher.config.enable_llm_assessment
     
     print("✅ Stage 5 integration test PASSED!")
     print(f"   - WebsiteContentProvider registered")
     print(f"   - CapabilityMatcher configured with LLM support")
-    print(f"   - Max LLM evaluations: {config.capability_matching.max_llm_evaluations}")
+    print("   - LLM assessments run for all eligible vendors")
     print(f"   - Scrape timeout: {config.capability_matching.scrape_timeout_seconds}s")
     print(f"   - Max content chars: {config.capability_matching.max_content_chars}")
     

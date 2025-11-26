@@ -224,31 +224,34 @@ class FieldExtractor:
             return None
         
         try:
-            prompt = f"""Extract the PRIMARY place of performance for vendor search from this tender document.
+            prompt = f"""SYSTEM ROLE:
+Determine the primary place of performance from the excerpt. Use only the supplied text (prioritized sentences containing cues like "Place of Performance", "Delivery to", "Work performed at"). Abstain if no location exists.
 
+TEXT (ranked & truncated to 2,500 chars):
 {text}
 
-Determine:
-1. Scope: Is this single location, multiple locations, nationwide, or international?
-2. PRIMARY location: The most important location for finding nearby vendors
-3. Extract city and state (use 2-letter state code like GA, NM, SC, CA, TX, NY)
+TASKS:
+1. Decide scope: single | multiple | nationwide | international | unknown.
+2. Identify the most important location for vendor targeting.
+3. Provide city + 2-letter state when in the U.S./Canada; otherwise use ISO 3166-1 alpha-2 country codes and set state to null.
+4. List up to 5 locations mentioned (city/state or country names).
+5. Include an evidence string quoting the phrase that drove the decision.
 
-Return JSON:
+Rules:
+- If instructions mention CONUS/nationwide without a city, use scope="nationwide", primary_city="Nationwide", primary_state=null.
+- If no concrete geography exists, set scope="unknown", primary_city=null, primary_state=null, country=null, and confidence="low".
+- Never invent locations not in the text.
+
+Return strict JSON ONLY:
 {{
-  "scope": "single|multiple|nationwide|international",
+  "scope": "single",
   "primary_city": "Glynco",
   "primary_state": "GA",
   "all_locations": ["Glynco, GA", "Artesia, NM"],
-  "confidence": "high|medium|low",
-  "country": "United States"
-}}
-
-Rules:
-- Use 2-letter state codes (GA, NM, SC, CA, TX, NY, FL, etc.)
-- If nationwide/CONUS: set primary_city="Nationwide", primary_state=null
-- If multiple equal locations: pick the first/most prominent one as primary
-- If international/overseas: set country accordingly
-- Return ONLY valid JSON, no other text"""
+  "country": "US",
+  "confidence": "high",
+  "evidence": "\"Place of Performance: Glynco, GA facility\""
+}}"""
 
             response = self.llm_provider.generate(prompt)
             if not response or not response.strip():
@@ -399,30 +402,39 @@ Rules:
                 sections.technical_requirements
             ]))[:3200]
             
-            prompt = f"""Extract vendor requirements from this tender text:
+            prompt = f"""SYSTEM ROLE:
+You extract vendor qualification requirements. Use only the text provided. Never copy the sample output or invent data. If a field is not mentioned, return null or an empty array explicitly.
 
+TEXT (truncated to 3,200 characters):
 {combined_text}
 
-Extract:
-- project_summary: brief description of what this tender is for (1-2 phrases, e.g., "law enforcement uniform supply", "utility vehicle procurement")
-- min_years: minimum years of experience (integer or null)
-- required_project_types: list of project types/experience areas
-- licenses: required licenses (list of strings)
-- certifications: required certifications (list of strings)
-- allowed_jurisdictions: geographic restrictions (list like ["Canada"])
-- business_size: "SMALL_ONLY" if small business preference, else null
-- special_status: special vendor statuses (list)
+INSTRUCTIONS:
+- project_summary must be a compact label (<=15 tokens) that can be used as a search tag.
+- For each field, cite the supporting snippet (<=18 words) inside an evidence map. If no evidence exists, set the field to null/[] and the evidence entry to null.
+- `min_years` must be an integer or null. Do not guess.
+- If no licenses/certifications/allowed_jurisdictions/special_status are listed, return [] (not placeholder text).
+- business_size: use "SMALL_ONLY" only when text mandates small-business set-aside; otherwise null.
+- required_project_types should contain unique phrases summarizing demanded experience areas; [] if absent.
 
-Return JSON:
+Return strict JSON ONLY:
 {{
-  "project_summary": "law enforcement ammunition supply and delivery",
-  "min_years": 5,
-  "required_project_types": ["tactical ammunition manufacturing", "law enforcement supply"],
-  "licenses": ["ATF license"],
-  "certifications": ["ISO 9001"],
-  "allowed_jurisdictions": ["Canada"],
-  "business_size": null,
-  "special_status": []
+  "project_summary": "...",
+  "min_years": 3 or null,
+  "required_project_types": ["..."],
+  "licenses": ["..."],
+  "certifications": ["..."],
+  "allowed_jurisdictions": ["USA"],
+  "business_size": "SMALL_ONLY" or null,
+  "special_status": ["women-owned"],
+  "evidence": {{
+    "project_summary": "quote",
+    "min_years": "quote or null",
+    "licenses": "quote or null",
+    "certifications": "quote or null",
+    "allowed_jurisdictions": "quote or null",
+    "business_size": "quote or null",
+    "special_status": "quote or null"
+  }}
 }}"""
 
             response = self.llm_provider.generate(prompt)
@@ -797,18 +809,31 @@ Return JSON:
         try:
             table_content = table_section.content[:2400]
             
-            prompt = f"""Extract line items from this tender table. For each row, extract:
-- item: item description (combine line number, caliber/type, and description)
-- quantity: numeric quantity (just the number)
-- unit: unit of measure
+            prompt = f"""SYSTEM ROLE:
+Normalize line items from the table below. Use only explicit table content. Do not infer missing data.
 
-Skip header rows and rows without quantities.
-
-Table:
+Table excerpt (trimmed to 2,400 chars):
 {table_content}
 
-Return JSON array:
-[{{"item": "...", "quantity": 1000, "unit": "rounds"}}]"""
+RULES:
+- Merge wrapped description lines with the same line number until the next quantity column appears.
+- Skip header rows, subtotal/total rows, and entries where the quantity cell is empty or contains text like N/A, TBD, --.
+- quantity must be numeric. If a range appears ("100-200"), capture the lower bound.
+- Normalize units to a controlled list when possible: EA, LOT, SET, KG, LBS, GAL, L, FT, M, HRS, DAYS, LBS, RDS (rounds). If unit missing, return null.
+- Include optional metadata when available in the row (nsn, part_number, model) but only when explicitly present.
+- Provide an evidence_line field quoting the original row text for auditing.
+
+Return strict JSON array ONLY. Example:
+[
+  {{
+    "item": "Line 001 - 9mm frangible training rounds",
+    "quantity": 50000,
+    "unit": "RDS",
+    "nsn": "1305-01-234-5678",
+    "part_number": "PN-9MM-FRANGE",
+    "evidence_line": "001 | 9mm frangible training ammunition | Qty 50,000 rds"
+  }}
+]"""
 
             response = self.llm_provider.generate(prompt)
             if not response or not response.strip():

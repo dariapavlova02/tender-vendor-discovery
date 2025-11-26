@@ -1,5 +1,6 @@
 from typing import Optional, List
 import logging
+import re
 
 from sqlalchemy import select, or_, and_
 from sqlalchemy.orm import Session
@@ -12,6 +13,13 @@ logger = logging.getLogger(__name__)
 
 
 class CanadaContractsSource:
+    IRRELEVANT_BUSINESS_PATTERNS = [
+        r'\b(kitchen|restaurant|bar|eatery|cafe|food|catering|bistro|grill|pub)\b',
+        r'\b(towing|tow truck|auto repair|garage|body shop)\b',
+        r'\b(fitness|gym|wellness|spa)\b',
+        r'\b(real estate|property|realty|realtor)\b',
+    ]
+    
     def __init__(self, session: Session):
         self.session = session
         self.canada_sources = [
@@ -21,6 +29,41 @@ class CanadaContractsSource:
             "canada_pspc_payments",
             "canada_sosa"
         ]
+    
+    @staticmethod
+    def is_technical_term(keyword: str) -> bool:
+        if re.match(r'^[.\d].*\d', keyword):
+            return True
+        if re.match(r'^\d+\.?\d*\s*(mm|cal|gauge)\b', keyword.lower()):
+            return True
+        return False
+    
+    @staticmethod
+    def expand_keywords_smart(keywords: List[str]) -> List[str]:
+        expanded = []
+        for kw in keywords:
+            kw = kw.strip()
+            if not kw:
+                continue
+            
+            if CanadaContractsSource.is_technical_term(kw):
+                expanded.append(kw)
+            else:
+                words = kw.split()
+                if len(words) > 1:
+                    expanded.extend(words)
+                else:
+                    expanded.append(kw)
+        
+        return list(set(expanded))
+    
+    @staticmethod
+    def is_likely_irrelevant(vendor_name: str) -> bool:
+        name_lower = vendor_name.lower()
+        for pattern in CanadaContractsSource.IRRELEVANT_BUSINESS_PATTERNS:
+            if re.search(pattern, name_lower):
+                return True
+        return False
     
     def search_vendors(
         self,
@@ -54,13 +97,7 @@ class CanadaContractsSource:
                 )
         
         if keywords:
-            expanded_keywords = []
-            for kw in keywords:
-                words = kw.strip().split()
-                if len(words) > 1:
-                    expanded_keywords.extend(words)
-                else:
-                    expanded_keywords.append(kw)
+            expanded_keywords = self.expand_keywords_smart(keywords)
             
             keyword_filters = [
                 Vendor.legal_name.ilike(f"%{kw}%") for kw in expanded_keywords if kw.strip()
@@ -107,6 +144,12 @@ class CanadaContractsSource:
         registry_vendors = list(result.scalars().all())
         
         vendors = proven_vendors + registry_vendors
+        
+        filtered_vendors = [v for v in vendors if not self.is_likely_irrelevant(v.legal_name)]
+        removed_count = len(vendors) - len(filtered_vendors)
+        if removed_count > 0:
+            logger.info(f"Filtered out {removed_count} likely irrelevant vendors (restaurants, bars, etc.)")
+        vendors = filtered_vendors
         
         if len(vendors) < 100:
             logger.info(f"Only {len(vendors)} vendors found. Attempting fallback searches.")

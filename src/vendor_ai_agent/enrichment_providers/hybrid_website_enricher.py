@@ -14,6 +14,7 @@ from Levenshtein import ratio
 from ..models import VendorRecord
 from .base import BaseEnrichmentProvider
 from .serper_client import SerperClient
+from .utils import filter_emails_for_vendor
 
 
 class HybridWebsiteEnricher(BaseEnrichmentProvider):
@@ -290,9 +291,13 @@ class HybridWebsiteEnricher(BaseEnrichmentProvider):
         vendor.filtering_metadata['website_source'] = result.get('source', 'unknown')
         
         if 'emails' in result and result['emails']:
-            vendor.filtering_metadata['serper_backup_emails'] = result['emails']
-            vendor.filtering_metadata['serper_backup_email_confidence'] = 0.7
-            self.logger.info(f"  📦 Saved {len(result['emails'])} backup emails from snippets")
+            filtered = filter_emails_for_vendor(vendor, result['emails'])
+            if filtered:
+                vendor.filtering_metadata['serper_backup_emails'] = filtered
+                vendor.filtering_metadata['serper_backup_email_confidence'] = 0.7
+                self.logger.info(
+                    f"  📦 Saved {len(filtered)} filtered backup emails from snippets"
+                )
         
         if 'phones' in result and result['phones']:
             vendor.filtering_metadata['serper_backup_phones'] = result['phones']

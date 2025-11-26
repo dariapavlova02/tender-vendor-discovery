@@ -1,9 +1,12 @@
 """Streamlit Dashboard for Tender AI Agent Observability."""
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
+import re
+import sys
 import zipfile
 from pathlib import Path
 from typing import List, Optional
@@ -25,8 +28,23 @@ except ImportError:
 from vendor_ai_agent.config import RuntimeConfig
 from vendor_ai_agent.models import PipelineArtifacts, TenderSection
 from vendor_ai_agent.pipeline import TenderVendorPipeline
+from vendor_ai_agent.modules.document_processing.classifier import DocumentClassifier
+from vendor_ai_agent.modules.manual_enrichment import ManualEnrichmentService
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:%(name)s:%(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+for handler in logging.root.handlers:
+    if isinstance(handler, logging.StreamHandler) and hasattr(handler.stream, 'reconfigure'):
+        try:
+            handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, TypeError):
+            pass
+
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
@@ -36,120 +54,143 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("🕵️ Tender AI Agent — Control Center")
-st.markdown("**Observability Dashboard** for end-to-end pipeline inspection")
+st.title("Tender Vendor AI Dashboard")
+st.markdown("Run the discovery pipeline, review extracted data, and export vendor shortlists.")
 
 
 def render_config_sidebar() -> RuntimeConfig:
     with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        st.subheader("🤖 LLM Settings")
-        model = st.selectbox(
-            "LLM Model",
-            ["gpt-5-mini", "gpt-5.1"],
-            index=0,
-            help="Select model for extraction and profiling"
+        st.header("Run Configuration")
+        st.caption(
+            "Choose how detailed the analysis should be. Standard mode balances speed and accuracy."
         )
-        
-        use_flex = st.checkbox(
-            "Use Flex Tier",
-            value=True,
-            help="Enable OpenAI Flex tier pricing"
-        )
-        
-        st.divider()
-        
-        st.subheader("🔧 Processing Mode")
-        manual_review = st.checkbox(
-            "Enable Manual Review",
-            value=False,
-            help="Allow editing extraction results before filtering"
-        )
-        
-        auto_ingest = st.checkbox(
-            "Auto Ingestion",
-            value=False,
-            help="Automatically fetch attachments from source APIs"
-        )
-        
-        st.divider()
-        
-        st.subheader("🗺️ Geographic Settings")
-        geo_mode = st.selectbox(
-            "Geographic Scope",
-            ["local_only", "local_plus_regional", "national", "custom_radius"],
-            index=1,
-            help="Control geographic filtering scope"
-        )
-        
-        if geo_mode == "custom_radius":
-            search_radius = st.slider(
-                "Search Radius (km)",
-                min_value=50,
-                max_value=500,
-                value=200,
-                step=50,
-                help="Maximum distance for vendor search"
-            )
-        else:
-            search_radius = 200
-        
-        st.divider()
-        
-        st.subheader("📊 Results Settings")
-        max_results = st.slider(
-            "Max Vendors to Return",
-            min_value=50,
-            max_value=1000,
-            value=500,
-            step=50,
-            help="Maximum number of vendor candidates after filtering"
-        )
-        
-        st.divider()
-        
-        st.subheader("💎 Enrichment Settings")
-        enable_google_maps = st.checkbox(
-            "Enable Google Maps Enrichment",
-            value=True,
-            help="Enrich vendor contacts via Google Maps API"
-        )
-        
-        enable_apollo = st.checkbox(
-            "Enable Apollo Enrichment",
-            value=True,
-            help="Enrich vendor contacts via Apollo API"
-        )
-        
-        auto_enrich_missing = st.checkbox(
-            "Auto-Enrich Missing Contacts",
-            value=False,
-            help="Automatically enrich vendors without contact info"
-        )
-        
-        st.divider()
-        st.caption("🔑 API Keys Status")
+
         config = RuntimeConfig()
-        st.text(f"OpenAI: {'✅' if config.openai_api_key else '❌'}")
-        st.text(f"Google Maps: {'✅' if config.google_maps_api_key else '❌'}")
-        st.text(f"Apollo: {'✅' if config.apollo_api_key else '❌'}")
-        
-        config.llm.cheap_model = model
-        config.llm.use_flex_tier = use_flex
-        config.enable_auto_ingestion = auto_ingest
-        config.enable_manual_review = manual_review
+        use_presets = st.checkbox(
+            "Use analysis presets",
+            value=True,
+            help="Recommended for most users: keeps a safe mix of speed and accuracy without tweaking every option manually.",
+        )
+        if use_presets:
+            mode = st.radio(
+                "Analysis mode",
+                ["Standard", "Quick scan", "Detailed"],
+                index=0,
+                help=(
+                    "Quick scan = fastest (no web scrape/LLM). Standard = balanced. Detailed = slowest but captures every website/contact and runs LLM scoring."
+                ),
+            )
+            if mode == "Standard":
+                config.capability_matching.enable_llm_assessment = True
+                config.enrichment.enable_website_search = True
+                config.enrichment.enable_contact_scraping = True
+            elif mode == "Quick scan":
+                config.capability_matching.enable_llm_assessment = False
+                config.enrichment.enable_website_search = False
+                config.enrichment.enable_contact_scraping = False
+            else:  # Detailed
+                config.capability_matching.enable_llm_assessment = True
+                config.enrichment.enable_website_search = True
+                config.enrichment.enable_contact_scraping = True
+                config.capability_matching.llm_parallelism = 8
+
+        max_results = st.slider(
+            "Maximum vendors to analyze",
+            min_value=100,
+            max_value=1000,
+            step=50,
+            value=config.filtering.max_candidates,
+            help="Upper limit for how many companies we pull through enrichment + scoring. Larger values increase run time and API spend.",
+        )
         config.filtering.max_candidates = max_results
-        config.filtering.geographic_mode = geo_mode
-        config.filtering.geographic_search_radius_km = search_radius
-        config.enrichment.enable_google_maps = enable_google_maps
-        config.enrichment.enable_apollo_enrichment = enable_apollo
-        config.enrichment.auto_enrich_on_missing = auto_enrich_missing
-        
+        config.discovery.target_results = max_results
+
+        max_govt_pct = st.slider(
+            "Max Government Source %",
+            min_value=0,
+            max_value=100,
+            step=5,
+            value=int(config.discovery.max_government_source_percentage * 100),
+            help="Maximum percentage of vendors from SAM.gov/Canada databases. If government sources exceed this limit, they will be cut. Remaining slots filled by web search (Serper/Apollo).",
+        )
+        config.discovery.max_government_source_percentage = max_govt_pct / 100
+
+        use_places_api = st.checkbox(
+            "Use Serper Places API (recommended)",
+            value=config.discovery.serper_use_places_api,
+            help="Places API provides phone numbers, ratings, and coordinates directly. Disable to use regular Search API for broader web results.",
+        )
+        config.discovery.serper_use_places_api = use_places_api
+
+        serper_max_queries = st.number_input(
+            "Max Serper Queries",
+            min_value=10,
+            max_value=500,
+            step=10,
+            value=config.discovery.serper_max_queries,
+            help="Maximum number of Serper API queries to make when searching for vendors. Higher values = more results but higher API costs.",
+        )
+        config.discovery.serper_max_queries = int(serper_max_queries)
+
+        with st.expander("Batch processing", expanded=False):
+            batch_size = st.number_input(
+                "Vendors per batch",
+                min_value=100,
+                max_value=2000,
+                step=50,
+                value=config.discovery.batch_size,
+                help="Controls how many vendors are enriched/scored per batch before pausing—useful for multi-thousand vendor runs.",
+            )
+            processing_batch = st.number_input(
+                "Batch number",
+                min_value=1,
+                value=config.discovery.processing_batch,
+                help="Start from the Nth batch of cached vendors (Batch 2 continues where Batch 1 stopped).",
+            )
+            use_cache = st.checkbox(
+                "Reuse cached vendors between runs",
+                value=config.discovery.enable_batch_cache,
+                help="Stores discovered vendors on disk so subsequent batches can skip re-discovery and pick up instantly.",
+            )
+            config.discovery.batch_size = int(batch_size)
+            config.discovery.processing_batch = int(processing_batch)
+            config.discovery.enable_batch_cache = use_cache
+
+        auto_ingest = st.checkbox(
+            "Fetch attachments from SAM/Canada when identifiers are found",
+            value=config.enable_auto_ingestion,
+            help="If the tender mentions a SAM/Canada reference number, automatically pull the official files before we parse anything.",
+        )
+        config.enable_auto_ingestion = auto_ingest
+
+        manual_review = st.checkbox(
+            "Open extraction editor before filtering",
+            value=config.enable_manual_review,
+            help="Pause after extraction so you can correct location/NAICS fields prior to vendor discovery—handy for messy PDFs.",
+        )
+        config.enable_manual_review = manual_review
+
+        if config.apollo_api_key:
+            apollo_boost = st.checkbox(
+                "Use Apollo booster when vendor count is low",
+                value=config.discovery.enable_apollo_booster,
+                help="If discovery yields too few vendors, run an Apollo search to top up the list (consumes Apollo credits).",
+            )
+            config.discovery.enable_apollo_booster = apollo_boost
+        else:
+            config.discovery.enable_apollo_booster = False
+
+        st.subheader("API keys")
+        st.write(
+            f"OpenAI: {'available' if config.openai_api_key else 'missing'}"
+        )
+        st.write(f"Apollo: {'available' if config.apollo_api_key else 'missing'}")
+
         return config
 
 
 def extract_zip(zip_path: Path, extract_dir: Path) -> List[Path]:
+    """Extract all relevant files from a ZIP archive."""
     extracted_files = []
     
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -157,7 +198,15 @@ def extract_zip(zip_path: Path, extract_dir: Path) -> List[Path]:
             if file_info.is_dir():
                 continue
             
-            file_name = Path(file_info.filename).name
+            try:
+                file_name = Path(file_info.filename).name
+            except (UnicodeDecodeError, ValueError):
+                try:
+                    file_name = Path(file_info.filename.encode('cp437').decode('utf-8', errors='replace')).name
+                except Exception:
+                    logger.warning("Skipping file with invalid encoding in filename")
+                    continue
+            
             if file_name.startswith('.') or file_name.startswith('__MACOSX'):
                 continue
             
@@ -173,49 +222,93 @@ def extract_zip(zip_path: Path, extract_dir: Path) -> List[Path]:
                         extracted_path = extract_dir / f"{base}_{counter}{suffix}"
                         counter += 1
                 
-                with zip_ref.open(file_info.filename) as source, open(extracted_path, 'wb') as target:
-                    target.write(source.read())
-                
-                extracted_files.append(extracted_path)
-                logger.info(f"Extracted: {extracted_path.name}")
+                try:
+                    with zip_ref.open(file_info.filename) as source, open(extracted_path, 'wb') as target:
+                        target.write(source.read())
+                    
+                    extracted_files.append(extracted_path)
+                    logger.info("Extracted: %s", extracted_path.name)
+                except Exception as e:
+                    logger.warning("Failed to extract %s: %s", file_name, str(e))
+                    continue
     
     return extracted_files
 
 
-def find_primary_rfp(files: List[Path]) -> Optional[Path]:
-    """Identify the primary RFP document from a list of files.
+def filter_relevant_documents(files: List[Path]) -> List[Path]:
+    """Filter out non-content files (forms, tiny files, drafts)."""
+    EXCLUDE_PATTERNS = [
+        r'bid\s*form', r'price\s*sheet', r'signature\s*page',
+        r'cover\s*page', r'payment\s*form', r'submittal\s*form',
+        r'clin\s*pricing\s*list', r'pricing\s*list\s*only',
+        r'draft', r'old', r'previous', r'superseded'
+    ]
     
-    Heuristics:
-    - Prefer files with 'RFP', 'RFQ', 'RFB', 'Tender' in name
-    - Prefer larger PDF files (likely main document)
-    - Exclude obvious attachments (Attachment, Appendix, Schedule, etc.)
+    MIN_CONTENT_SIZE = 50_000
+    
+    relevant = []
+    
+    for file in files:
+        if file.suffix.lower() not in ['.pdf', '.docx', '.doc']:
+            continue
+        
+        name_lower = file.name.lower()
+        size = file.stat().st_size
+        
+        if size < MIN_CONTENT_SIZE:
+            continue
+        
+        excluded = False
+        for pattern in EXCLUDE_PATTERNS:
+            if re.search(pattern, name_lower):
+                if 'pricing' in pattern and size > 500_000:
+                    continue
+                excluded = True
+                break
+        
+        if excluded:
+            continue
+        
+        relevant.append(file)
+    
+    return relevant
+
+
+def select_documents_for_processing(files: List[Path]) -> tuple[List[Path], dict]:
+    """Select and prioritize documents for comprehensive extraction.
+    
+    Returns:
+        - List of documents in priority order
+        - Metadata dict with stats for UI
     """
     if not files:
-        return None
+        return [], {'total_files': 0, 'relevant_files': 0, 'excluded_files': 0, 'selected_files': 0, 'by_type': {}}
     
-    pdf_files = [f for f in files if f.suffix.lower() == '.pdf']
+    relevant = filter_relevant_documents(files)
     
-    if not pdf_files:
-        return files[0]
+    if not relevant:
+        relevant = [max(files, key=lambda f: f.stat().st_size if f.suffix.lower() == '.pdf' else 0)]
     
-    attachment_keywords = ['attachment', 'appendix', 'schedule', 'exhibit', 'annex', 'form']
-    rfp_keywords = ['rfp', 'rfq', 'rfb', 'tender', 'solicitation', 'bid']
+    classifier = DocumentClassifier()
+    classified = [classifier.classify(f) for f in relevant]
     
-    scored_files = []
-    for pdf in pdf_files:
-        name_lower = pdf.name.lower()
-        score = pdf.stat().st_size
-        
-        if any(kw in name_lower for kw in attachment_keywords):
-            score *= 0.1
-        
-        if any(kw in name_lower for kw in rfp_keywords):
-            score *= 10
-        
-        scored_files.append((score, pdf))
+    classified.sort(key=lambda x: x.priority_score, reverse=True)
     
-    scored_files.sort(reverse=True, key=lambda x: x[0])
-    return scored_files[0][1] if scored_files else pdf_files[0]
+    stats = {
+        'total_files': len(files),
+        'relevant_files': len(relevant),
+        'excluded_files': len(files) - len(relevant),
+        'selected_files': len(classified),
+        'by_type': {}
+    }
+    
+    for doc in classified:
+        doc_type = doc.doc_type.value
+        stats['by_type'][doc_type] = stats['by_type'].get(doc_type, 0) + 1
+    
+    selected_paths = [doc.path for doc in classified]
+    
+    return selected_paths, stats
 
 
 def save_uploaded_files(uploaded_files) -> List[Path]:
@@ -229,10 +322,10 @@ def save_uploaded_files(uploaded_files) -> List[Path]:
             f.write(uploaded_file.getbuffer())
         
         if path.suffix.lower() == '.zip':
-            logger.info(f"Extracting ZIP archive: {path.name}")
+            logger.info("Extracting ZIP archive: %s", path.name)
             extracted = extract_zip(path, temp_dir)
             file_paths.extend(extracted)
-            logger.info(f"Extracted {len(extracted)} files from {path.name}")
+            logger.info("Extracted %d files from %s", len(extracted), path.name)
         else:
             file_paths.append(path)
     
@@ -462,31 +555,113 @@ def get_contact_status_icon(vendor):
         return "❌"
 
 
-def render_vendors_tab(artifacts: PipelineArtifacts):
-    st.subheader("🏢 Vendor Discovery & Matching")
+def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeConfig] = None):
+    st.subheader("Vendor Discovery & Matching")
+    manual_service: Optional[ManualEnrichmentService] = None
+    if config and config.apollo_api_key:
+        manual_service = ManualEnrichmentService(apollo_api_key=config.apollo_api_key)
+
+    flash_message = st.session_state.pop('apollo_flash', None)
+    if flash_message:
+        st.success(flash_message)
+
+    batch_caption = (
+        f"Batch {artifacts.batch_id}"
+        if hasattr(artifacts, "batch_id")
+        else "Batch 1"
+    )
+    processed_caption = (
+        ", processed batches: "
+        + ", ".join(str(b) for b in (artifacts.processed_batches or []))
+        if getattr(artifacts, "processed_batches", [])
+        else ""
+    )
+    st.caption(batch_caption + processed_caption)
     
-    tab1, tab2, tab3, tab4 = st.tabs(["🎯 Final Matches", "🔍 All Discovered", "💎 Manual Enrichment", "📊 Stats"])
+    tab1, tab2, tab3 = st.tabs(["Selected", "All candidates", "Pipeline stats"])
     
     with tab1:
         if not artifacts.final_matches:
             st.info("No vendor matches generated yet")
             return
-        
+
         st.markdown(f"**{len(artifacts.final_matches)} matched vendors**")
-        
+
+        if manual_service:
+            st.markdown("#### 🔌 Apollo contact enrichment")
+            missing_email = [m.vendor for m in artifacts.final_matches if not m.vendor.email]
+            missing_phone = [m.vendor for m in artifacts.final_matches if not m.vendor.phone]
+
+            bulk_cols = st.columns(2)
+            with bulk_cols[0]:
+                label = f"Fetch emails ({len(missing_email)})"
+                if st.button(label, type="secondary", disabled=not missing_email):
+                    manual_service.batch_enrich_apollo(missing_email)
+                    st.session_state['artifacts'] = artifacts
+                    st.session_state['apollo_flash'] = "Apollo email enrichment completed"
+                    try:
+                        st.rerun()
+                    except AttributeError:
+                        st.experimental_rerun()
+
+            with bulk_cols[1]:
+                label = f"Fetch phones ({len(missing_phone)})"
+                if st.button(label, type="secondary", disabled=not missing_phone):
+                    manual_service.batch_enrich_apollo(missing_phone)
+                    st.session_state['artifacts'] = artifacts
+                    st.session_state['apollo_flash'] = "Apollo phone enrichment completed"
+                    try:
+                        st.rerun()
+                    except AttributeError:
+                        st.experimental_rerun()
+
+            st.caption("Click a specific vendor below to refresh only that record.")
+            max_rows = min(25, len(artifacts.final_matches))
+            for idx, match in enumerate(artifacts.final_matches[:max_rows]):
+                vendor = match.vendor
+                cols = st.columns([3, 2, 2, 1.5])
+                with cols[0]:
+                    st.markdown(f"**{vendor.company_name}**")
+                    st.caption(vendor.location or "Location unknown")
+                with cols[1]:
+                    st.markdown(f"Email: {vendor.email or '—'}")
+                with cols[2]:
+                    st.markdown(f"Phone: {vendor.phone or '—'}")
+                with cols[3]:
+                    already_enriched = bool(vendor.filtering_metadata.get("apollo_enriched"))
+                    button_label = "Re-fetch" if already_enriched else "Fetch contacts"
+                    disabled = False
+                    if not vendor.company_name:
+                        disabled = True
+                    if st.button(
+                        button_label,
+                        key=f"apollo_enrich_{idx}_{vendor.company_name}",
+                        help="Uses Apollo credits for a single vendor lookup.",
+                        disabled=disabled,
+                    ):
+                        manual_service.enrich_single_vendor_apollo(vendor)
+                        st.session_state['artifacts'] = artifacts
+                        st.session_state['apollo_flash'] = f"Apollo contacts refreshed for {vendor.company_name}."
+                        try:
+                            st.rerun()
+                        except AttributeError:
+                            st.experimental_rerun()
+
         match_data = []
         for match in artifacts.final_matches[:100]:
+            vendor = match.vendor
             match_data.append({
-                "Contacts": get_contact_status_icon(match.vendor),
-                "Company": match.vendor.company_name,
+                "Status": vendor.filtering_metadata.get("match_status", "selected").title(),
+                "Batch": vendor.filtering_metadata.get("batch", 1),
+                "Reason": vendor.filtering_metadata.get("match_reason", ""),
+                "Company": vendor.company_name,
                 "Score": f"{match.capability_match_score:.2f}",
-                "Location": match.vendor.location or "N/A",
-                "Industry": match.vendor.industry or "N/A",
-                "Website": match.vendor.website or "N/A",
-                "Email": match.vendor.email or "N/A",
-                "Phone": match.vendor.phone or "N/A",
-                "Source": match.vendor.source or "N/A",
-                "Past Winner": "✅" if match.vendor.is_past_winner else "❌"
+                "Location": vendor.location or "N/A",
+                "Website": vendor.website or "N/A",
+                "Email": vendor.email or "",
+                "Phone": vendor.phone or "",
+                "Source": vendor.source or "N/A",
+                "Past Winner": "yes" if vendor.is_past_winner else "no",
             })
         
         if pd:
@@ -515,41 +690,50 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
                         st.markdown(f"- {ref}")
     
     with tab2:
-        if not artifacts.enriched_vendors:
-            st.info("No vendors discovered")
+        all_matches = artifacts.all_matches or artifacts.final_matches
+        if not all_matches:
+            st.info("No scored vendors yet")
             return
+
+        st.markdown(f"**{len(all_matches)} vendors scored**")
         
-        st.markdown(f"**{len(artifacts.enriched_vendors)} vendors after enrichment**")
-        
-        vendor_data = []
-        for vendor in artifacts.enriched_vendors[:100]:
-            vendor_data.append({
-                "Contacts": get_contact_status_icon(vendor),
+        rows = []
+        for match in all_matches:
+            vendor = match.vendor
+            rows.append({
+                "Status": vendor.filtering_metadata.get("match_status", "needs_review").title(),
+                "Batch": vendor.filtering_metadata.get("batch", 1),
+                "Reason": vendor.filtering_metadata.get("match_reason", ""),
                 "Company": vendor.company_name,
+                "Score": match.capability_match_score,
                 "Location": vendor.location or "N/A",
-                "Industry": vendor.industry or "N/A",
                 "Website": vendor.website or "N/A",
-                "Email": vendor.email or "N/A",
-                "Phone": vendor.phone or "N/A",
-                "Source": vendor.source or "N/A"
+                "Email": vendor.email or "",
+                "Phone": vendor.phone or "",
+                "Source": vendor.source or "N/A",
             })
-        
+
         if pd:
-            df = pd.DataFrame(vendor_data)
+            df = pd.DataFrame(rows)
             st.dataframe(df, width="stretch", hide_index=True)
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download full candidate list",
+                data=csv,
+                file_name="vendor_candidates.csv",
+                mime="text/csv",
+            )
         else:
-            st.json(vendor_data)
+            st.json(rows)
     
     with tab3:
-        render_manual_enrichment_tab(artifacts)
-    
-    with tab4:
         col1, col2 = st.columns(2)
         
         with col1:
             st.metric("Raw Vendors", len(artifacts.raw_vendors))
             st.metric("After Enrichment", len(artifacts.enriched_vendors))
             st.metric("Final Matches", len(artifacts.final_matches))
+            st.metric("Scored Candidates", len(artifacts.all_matches or []))
         
         with col2:
             if artifacts.final_matches:
@@ -565,188 +749,6 @@ def render_vendors_tab(artifacts: PipelineArtifacts):
                     if not v.email and not v.phone
                 )
                 st.metric("Missing Contacts", missing_contacts)
-
-
-def render_manual_enrichment_tab(artifacts: PipelineArtifacts):
-    st.markdown("### 💎 Manual Vendor Enrichment")
-    st.info("Manually enrich vendors without contact information using Google Maps or Apollo")
-    
-    if not artifacts.final_matches:
-        st.warning("No vendors to enrich yet. Run pipeline first.")
-        return
-    
-    from vendor_ai_agent.modules.manual_enrichment import ManualEnrichmentService
-    
-    config = st.session_state.get('config')
-    if not config:
-        st.error("Configuration not available. Please run pipeline first.")
-        return
-    
-    enrichment_service = ManualEnrichmentService(
-        google_maps_api_key=config.google_maps_api_key,
-        apollo_api_key=config.apollo_api_key
-    )
-    
-    vendors = [m.vendor for m in artifacts.final_matches]
-    vendors_missing = [v for v in vendors if not v.email and not v.phone]
-    vendors_partial = [v for v in vendors if (v.email or v.phone) and not (v.email and v.phone)]
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Vendors", len(vendors))
-    with col2:
-        st.metric("Missing Contacts", len(vendors_missing))
-    with col3:
-        st.metric("Partial Contacts", len(vendors_partial))
-    
-    st.divider()
-    
-    filter_option = st.selectbox(
-        "Filter Vendors",
-        ["All Vendors", "Missing Contacts Only", "Partial Contacts Only"],
-        index=1
-    )
-    
-    if filter_option == "Missing Contacts Only":
-        display_vendors = vendors_missing
-    elif filter_option == "Partial Contacts Only":
-        display_vendors = vendors_partial
-    else:
-        display_vendors = vendors
-    
-    if not display_vendors:
-        st.success("✅ All vendors have complete contact information!")
-        return
-    
-    st.markdown(f"**Showing {len(display_vendors)} vendors**")
-    
-    col_batch1, col_batch2 = st.columns(2)
-    with col_batch1:
-        if st.button("🗺️ Batch Enrich via Google Maps", type="primary"):
-            if not config.google_maps_api_key:
-                st.error("❌ Google Maps API key not configured")
-            else:
-                with st.spinner(f"Enriching {len(display_vendors)} vendors via Google Maps..."):
-                    progress_bar = st.progress(0)
-                    enriched_count = 0
-                    
-                    for idx, vendor in enumerate(display_vendors):
-                        enriched = enrichment_service.enrich_single_vendor_google_maps(vendor)
-                        if enriched.email or enriched.phone:
-                            enriched_count += 1
-                            for match in artifacts.final_matches:
-                                if match.vendor.company_name == vendor.company_name:
-                                    match.vendor.email = enriched.email or match.vendor.email
-                                    match.vendor.phone = enriched.phone or match.vendor.phone
-                        
-                        progress_bar.progress((idx + 1) / len(display_vendors))
-                    
-                    st.success(f"✅ Enriched {enriched_count} out of {len(display_vendors)} vendors")
-                    st.rerun()
-    
-    with col_batch2:
-        if st.button("🚀 Batch Enrich via Apollo", type="primary"):
-            if not config.apollo_api_key:
-                st.error("❌ Apollo API key not configured")
-            else:
-                with st.spinner(f"Enriching {len(display_vendors)} vendors via Apollo..."):
-                    progress_bar = st.progress(0)
-                    enriched_count = 0
-                    
-                    for idx, vendor in enumerate(display_vendors):
-                        enriched = enrichment_service.enrich_single_vendor_apollo(vendor)
-                        if enriched.email or enriched.phone:
-                            enriched_count += 1
-                            for match in artifacts.final_matches:
-                                if match.vendor.company_name == vendor.company_name:
-                                    match.vendor.email = enriched.email or match.vendor.email
-                                    match.vendor.phone = enriched.phone or match.vendor.phone
-                        
-                        progress_bar.progress((idx + 1) / len(display_vendors))
-                    
-                    st.success(f"✅ Enriched {enriched_count} out of {len(display_vendors)} vendors")
-                    st.rerun()
-    
-    st.divider()
-    
-    for idx, vendor in enumerate(display_vendors[:20]):
-        with st.expander(
-            f"{get_contact_status_icon(vendor)} {vendor.company_name} - "
-            f"Email: {'✓' if vendor.email else '✗'} | Phone: {'✓' if vendor.phone else '✗'}",
-            expanded=False
-        ):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Company Info**")
-                st.text(f"Name: {vendor.company_name}")
-                st.text(f"Location: {vendor.location or 'N/A'}")
-                st.text(f"Website: {vendor.website or 'N/A'}")
-                st.text(f"Industry: {vendor.industry or 'N/A'}")
-            
-            with col2:
-                st.markdown("**Current Contacts**")
-                st.text(f"Email: {vendor.email or 'Missing'}")
-                st.text(f"Phone: {vendor.phone or 'Missing'}")
-            
-            col_btn1, col_btn2, col_btn3 = st.columns(3)
-            
-            with col_btn1:
-                if st.button(f"🗺️ Google Maps", key=f"gmaps_{idx}"):
-                    if not config.google_maps_api_key:
-                        st.error("❌ Google Maps API key not configured")
-                    else:
-                        with st.spinner(f"Enriching {vendor.company_name}..."):
-                            enriched = enrichment_service.enrich_single_vendor_google_maps(vendor)
-                            if enriched.email or enriched.phone:
-                                for match in artifacts.final_matches:
-                                    if match.vendor.company_name == vendor.company_name:
-                                        match.vendor.email = enriched.email or match.vendor.email
-                                        match.vendor.phone = enriched.phone or match.vendor.phone
-                                st.success(f"✅ Enriched {vendor.company_name}")
-                                st.rerun()
-                            else:
-                                st.warning("⚠️ No additional contacts found")
-            
-            with col_btn2:
-                if st.button(f"🚀 Apollo", key=f"apollo_{idx}"):
-                    if not config.apollo_api_key:
-                        st.error("❌ Apollo API key not configured")
-                    else:
-                        with st.spinner(f"Enriching {vendor.company_name}..."):
-                            enriched = enrichment_service.enrich_single_vendor_apollo(vendor)
-                            if enriched.email or enriched.phone:
-                                for match in artifacts.final_matches:
-                                    if match.vendor.company_name == vendor.company_name:
-                                        match.vendor.email = enriched.email or match.vendor.email
-                                        match.vendor.phone = enriched.phone or match.vendor.phone
-                                st.success(f"✅ Enriched {vendor.company_name}")
-                                st.rerun()
-                            else:
-                                st.warning("⚠️ No additional contacts found")
-            
-            with col_btn3:
-                if st.button(f"✏️ Manual Entry", key=f"manual_{idx}"):
-                    st.session_state[f'show_manual_form_{idx}'] = True
-            
-            if st.session_state.get(f'show_manual_form_{idx}', False):
-                with st.form(f"manual_entry_{idx}"):
-                    st.markdown("**Enter Contact Information**")
-                    manual_email = st.text_input("Email", value=vendor.email or "")
-                    manual_phone = st.text_input("Phone", value=vendor.phone or "")
-                    
-                    if st.form_submit_button("💾 Save"):
-                        for match in artifacts.final_matches:
-                            if match.vendor.company_name == vendor.company_name:
-                                match.vendor.email = manual_email or match.vendor.email
-                                match.vendor.phone = manual_phone or match.vendor.phone
-                        
-                        st.success(f"✅ Contacts saved for {vendor.company_name}")
-                        st.session_state[f'show_manual_form_{idx}'] = False
-                        st.rerun()
-    
-    if len(display_vendors) > 20:
-        st.info(f"Showing first 20 of {len(display_vendors)} vendors")
 
 
 def render_debug_tab(artifacts: PipelineArtifacts):
@@ -782,6 +784,96 @@ def _dataclass_to_dict(obj):
         return result
     return obj
 
+
+def render_pipeline_results(
+    artifacts: PipelineArtifacts,
+    config: RuntimeConfig,
+    *,
+    pipeline: Optional[TenderVendorPipeline] = None,
+    cached_run: bool = False,
+) -> None:
+    """Render the full dashboard + export controls for a finished run."""
+    if cached_run:
+        st.info(
+            "Showing results from the last completed run. Click 'Run Pipeline' to refresh, "
+            "or use the reset button below to start over."
+        )
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["Overview", "Extracted Data", "Document Content", "Vendors", "Debug"]
+    )
+
+    with tab1:
+        render_overview_tab(artifacts)
+
+    with tab2:
+        render_extraction_tab(artifacts)
+
+    with tab3:
+        render_documents_tab(artifacts)
+
+    with tab4:
+        render_vendors_tab(artifacts, config)
+
+    with tab5:
+        render_debug_tab(artifacts)
+
+    st.divider()
+    st.markdown("### 📤 Export Results")
+
+    match_rows = []
+    matches_df = None
+    if pd and artifacts.final_matches:
+        for match in artifacts.final_matches:
+            match_rows.append({
+                "Company": match.vendor.company_name,
+                "Score": match.capability_match_score,
+                "Email": match.vendor.email or "",
+                "Phone": match.vendor.phone or "",
+                "Website": match.vendor.website or "",
+                "Location": match.vendor.location or "",
+                "Rationale": match.rationale,
+            })
+        matches_df = pd.DataFrame(match_rows)
+
+    col_exp1, col_exp2, col_exp3 = st.columns(3)
+
+    with col_exp1:
+        if matches_df is not None:
+            csv_bytes = matches_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv_bytes,
+                file_name="vendor_matches.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("CSV export available after matches are generated.")
+
+    with col_exp2:
+        if matches_df is not None:
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                matches_df.to_excel(writer, index=False, sheet_name="Matches")
+            st.download_button(
+                label="📊 Download Excel",
+                data=excel_buffer.getvalue(),
+                file_name="vendor_matches.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        else:
+            st.info("Excel export available after matches are generated.")
+
+    with col_exp3:
+        if st.button("📂 Save to outputs", type="secondary"):
+            try:
+                output_dir = Path("outputs")
+                output_dir.mkdir(exist_ok=True)
+                pipeline_to_use = pipeline or TenderVendorPipeline(config)
+                pipeline_to_use.save_outputs(artifacts.final_matches, directory=output_dir)
+                st.success("✅ Results saved to outputs/ directory")
+            except Exception as e:
+                st.error(f"Export failed: {e}")
 
 def apply_extraction_edits(profile):
     edited_data = st.session_state.get('edited_extraction')
@@ -835,29 +927,60 @@ def main():
     all_file_paths = save_uploaded_files(uploaded_files)
     
     if len(all_file_paths) > 1:
-        st.markdown("### 📂 Detected Files")
-        primary = find_primary_rfp(all_file_paths)
+        st.markdown("### 📂 Document Selection")
+        selected_files, stats = select_documents_for_processing(all_file_paths)
         
-        st.info(f"🎯 **Primary document detected:** `{primary.name if primary else 'None'}`\n\n"
-                f"Processing only the primary RFP document to ensure optimal extraction quality. "
-                f"All {len(all_file_paths)} files are available in `data/temp_upload/` directory.")
+        st.info(f"📑 **Processing {stats['selected_files']} of {stats['total_files']} documents**\n\n"
+                f"Multi-document processing enabled: extracting comprehensive requirements from all relevant tender documents.")
         
-        with st.expander(f"View all {len(all_file_paths)} files"):
-            for fp in all_file_paths:
-                is_primary = fp == primary
-                icon = "📄" if is_primary else "📎"
-                label = " **(PRIMARY)**" if is_primary else ""
-                st.markdown(f"{icon} `{fp.name}` ({fp.stat().st_size // 1024} KB){label}")
+        if stats['by_type']:
+            st.markdown("**Document Breakdown:**")
+            type_mapping = {
+                'CORE_RFP': '📘 Core RFP',
+                'TECH_AMENDMENT': '📝 Technical Amendments',
+                'ADDENDUM': '📋 Addenda',
+                'APPENDIX': '📊 Appendices',
+                'SOW': '📄 Statement of Work',
+                'PRESENTATION': '📊 Presentations',
+                'UNKNOWN': '📎 Other Documents'
+            }
+            for doc_type, count in stats['by_type'].items():
+                display_name = type_mapping.get(doc_type, doc_type)
+                st.markdown(f"  - {display_name}: {count}")
         
-        selected_files = [primary] if primary else all_file_paths[:1]
+        with st.expander(f"View selected files ({len(selected_files)})"):
+            for fp in selected_files:
+                st.markdown(f"📄 `{fp.name}` ({fp.stat().st_size // 1024} KB)")
+        
+        if stats['excluded_files'] > 0:
+            with st.expander(f"View excluded files ({stats['excluded_files']})"):
+                all_selected_names = {fp.name for fp in selected_files}
+                for fp in all_file_paths:
+                    if fp.name not in all_selected_names:
+                        st.markdown(f"📎 `{fp.name}` ({fp.stat().st_size // 1024} KB)")
     else:
         selected_files = all_file_paths
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         run_button = st.button("🚀 Run Pipeline", type="primary", width="stretch")
-    
+
+    cached_artifacts = st.session_state.get('artifacts')
+    cached_config = st.session_state.get('config') or config
+
     if not run_button:
+        if cached_artifacts:
+            st.markdown("### 🔁 Last Run Results")
+            if st.button("🧹 Clear cached results", type="secondary"):
+                st.session_state.pop('artifacts', None)
+                st.session_state.pop('config', None)
+                st.info("Cached results cleared. Upload documents and click 'Run Pipeline' to start a new analysis.")
+                return
+            render_pipeline_results(
+                cached_artifacts,
+                cached_config,
+                cached_run=True,
+            )
         return
     
     try:
@@ -930,74 +1053,15 @@ def main():
         
         if config.enable_manual_review:
             st.info("💡 Manual review mode enabled. Check the 'Extracted Data' tab to edit values before re-running.")
-        
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📊 Overview",
-            "🧠 Extracted Data",
-            "📄 Document Content",
-            "🏢 Vendors",
-            "🐛 Debug"
-        ])
-        
-        with tab1:
-            render_overview_tab(artifacts)
-        
-        with tab2:
-            render_extraction_tab(artifacts)
-        
-        with tab3:
-            render_documents_tab(artifacts)
-        
-        with tab4:
-            render_vendors_tab(artifacts)
-        
-        with tab5:
-            render_debug_tab(artifacts)
-        
+
         st.session_state['artifacts'] = artifacts
         st.session_state['config'] = config
-        
-        st.divider()
-        st.markdown("### 📤 Export Results")
-        
-        col_exp1, col_exp2, col_exp3 = st.columns(3)
-        
-        with col_exp1:
-            if st.button("💾 Save as Excel", type="secondary"):
-                try:
-                    from pathlib import Path
-                    output_dir = Path("outputs")
-                    output_dir.mkdir(exist_ok=True)
-                    pipeline.save_outputs(artifacts.final_matches, directory=output_dir)
-                    st.success("✅ Results saved to outputs/ directory")
-                except Exception as e:
-                    st.error(f"Export failed: {e}")
-        
-        with col_exp2:
-            if st.button("📊 Generate Report", type="secondary"):
-                st.info("Report generation feature coming soon!")
-        
-        with col_exp3:
-            if pd and artifacts.final_matches:
-                match_data = []
-                for match in artifacts.final_matches:
-                    match_data.append({
-                        "Company": match.vendor.company_name,
-                        "Score": match.capability_match_score,
-                        "Email": match.vendor.email or "",
-                        "Phone": match.vendor.phone or "",
-                        "Website": match.vendor.website or "",
-                        "Location": match.vendor.location or "",
-                        "Rationale": match.rationale
-                    })
-                df = pd.DataFrame(match_data)
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Download CSV",
-                    data=csv,
-                    file_name="vendor_matches.csv",
-                    mime="text/csv"
-                )
+
+        render_pipeline_results(
+            artifacts,
+            config,
+            pipeline=pipeline,
+        )
         
     except Exception as exc:
         st.error(f"❌ Pipeline failed: {exc}")

@@ -1,6 +1,6 @@
-# Tender Vendor AI Agent (MVP Scaffold)
+# Tender Vendor AI Agent
 
-This repository bootstraps the architecture for the Tender Vendor AI Agent described in the business plan. It wires together stub modules for the full pipeline so engineers can iterate on each stage independently while maintaining a consistent interface.
+Production-ready AI-powered system for automated tender analysis and vendor discovery. This system intelligently parses procurement documents, extracts requirements, discovers qualified vendors, and generates comprehensive matching reports.
 
 ## Repository Structure
 
@@ -22,83 +22,212 @@ src/vendor_ai_agent/
 └── enrichment_providers/   # Contact/firmographic providers
 ```
 
-Outputs are written to `./outputs` by default, and generated artifacts include CSV, XLSX, and JSON files.
+Outputs are written to `./outputs` by default, and generated artifacts include CSV, XLSX, and JSON files with vendor matches, capability scores, and contact information.
 
-## Getting Started
+## Key Features
 
-1. **Create & activate venv** (Python 3.10 recommended):
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -e .
-   ```
-2. **Configure API keys** (optional, for ingestion):
-   ```bash
-   export SAM_API_KEY=your_sam_key
-   ```
-   CanadaBuys datasets are public; resource IDs can be overridden via `RuntimeConfig.canada_open_data`. _TODO: import the corporate proxy certificate into the trust store/`certifi` so SAM/CanadaBuys calls run with SSL verification enabled._
-2. **Run the skeleton pipeline** with placeholder tender files:
-   ```bash
-   tender-vendor-agent path/to/tender1.pdf path/to/tender2.docx
-   ```
-   The current implementation uses mock logic but demonstrates the full control flow (parse → extract → discover → enrich → filter → score → export).
+- **Multi-format Document Parsing**: PDF, DOCX, XLSX with intelligent section extraction
+- **Requirement Analysis**: LLM-powered extraction of technical specs, volumes, and certifications
+- **Multi-Source Vendor Discovery**: SAM.gov, CanadaBuys, Apollo, Serper, static databases
+- **Contact Enrichment**: Automated discovery of decision-maker contact information
+- **Intelligent Matching**: Capability-based scoring with geographic and certification filters
+- **Production Database**: PostgreSQL with migration support via Alembic
+- **Visual Dashboard**: Real-time pipeline inspection and debugging interface
 
-### API Ingestion
+## Quick Start
 
-The `vendor_ai_agent.ingestion` package introduces:
-
-- `SamClient` / `UsSamIngestor`: wraps `https://api.sam.gov/opportunities/v2/search` with mandatory `solnum`, `postedFrom`, `postedTo`, and maps results into the unified `tender_profile.api_metadata` schema.
-- `CanadaCkanClient` / `CanadaBuysIngestor`: queries CanadaBuys tender notices & contract history via the CKAN `package_show/datastore_search` endpoints and hydrates metadata plus lists of attachments/awards.
-- `TenderIngestionRouter`: orchestrates USA/CAN/manual ingestion. `TenderVendorPipeline.run(..., ingestion_request=...)` will pre-populate `api_metadata` before document parsing.
-- `scripts/run_full_pipeline.py`: CLI wrapper to run the entire pipeline locally. Example:
-  ```bash
-  cd /Users/dariapavlova/Documents/vendor_ai_agent
-  source .venv/bin/activate
-  PYTHONPATH=src scripts/run_full_pipeline.py "data/Object _ rfx_18106 - OPP-1984 Supply and Delivery of Ammunition/RFB Addenda"
-  ```
-  Add `--source-system CANADABUYS --reference <id>` (or `--source-system SAM --solnum ... --posted-from ... --posted-to ...`) to pull API metadata and attachments.
-  Even without explicit flags the pipeline auto-detects reference numbers from uploaded documents (e.g., “Tender# 20070”) and will attempt a CanadaBuys ingestion/fetch when those identifiers are present.
-
-## Observability Dashboard
-
-Visual debugging interface for pipeline inspection:
+### 1. Installation
 
 ```bash
+# Clone repository
+git clone <repository-url>
+cd vendor_ai_agent
+
+# Create and activate virtual environment (Python 3.10+)
+python3 -m venv .venv
+source .venv/bin/activate
+
 # Install dependencies
 poetry install
+```
 
-# Launch dashboard
+### 2. Configuration
+
+Create `.env` file with required API keys:
+
+```bash
+# Required
+OPENAI_API_KEY=your_openai_key
+
+# Optional (for enhanced vendor discovery)
+SAM_API_KEY=your_sam_key
+APOLLO_API_KEY=your_apollo_key
+SERPER_API_KEY=your_serper_key
+
+# Optional (LLM tracing)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your_langsmith_key
+LANGCHAIN_PROJECT=vendor-agent
+```
+
+See `.env.example` for full configuration options.
+
+### 3. Database Setup
+
+```bash
+# Initialize database
+python scripts/setup_database.py
+
+# Run migrations
+alembic upgrade head
+```
+
+### 4. Run Pipeline
+
+```bash
+# Process tender documents
+PYTHONPATH=src scripts/run_full_pipeline.py "path/to/tender/folder"
+
+# With API ingestion (CanadaBuys)
+PYTHONPATH=src scripts/run_full_pipeline.py \
+  --source-system CANADABUYS \
+  --reference tender_12345 \
+  "path/to/tender/folder"
+
+# With API ingestion (SAM.gov)
+PYTHONPATH=src scripts/run_full_pipeline.py \
+  --source-system SAM \
+  --solnum ABC123 \
+  --posted-from 2024-01-01 \
+  --posted-to 2024-12-31 \
+  "path/to/tender/folder"
+```
+
+Pipeline stages: Document Parsing → Requirement Extraction → Vendor Discovery → Enrichment → Filtering → Capability Matching → Output Generation
+
+## Stakeholder Quick Launch
+
+Shipping the project to non-technical reviewers? Provide the folder with the prepared `.env` file and ask them to run the one-click scripts:
+
+- **macOS:** double-click `start_dashboard_mac.sh`
+- **Windows:** double-click `start_dashboard_windows.bat`
+
+The scripts create a local virtual environment, install dependencies on first launch, and open the dashboard at http://localhost:8501. See [`STAKEHOLDER_README.md`](STAKEHOLDER_README.md) for the full step-by-step guide you can forward to stakeholders.
+
+## Architecture
+
+### Core Components
+
+**Ingestion Layer**
+- `SamClient` / `UsSamIngestor`: SAM.gov API integration for US federal opportunities
+- `CanadaCkanClient` / `CanadaBuysIngestor`: CanadaBuys CKAN integration for Canadian tenders
+- `TenderIngestionRouter`: Multi-source ingestion orchestration with auto-detection
+
+**Document Processing**
+- Multi-format parser (PDF, DOCX, XLSX)
+- Table extraction and classification
+- Q&A pair extraction
+- Section-aware content analysis
+
+**Vendor Discovery**
+- SAM.gov Entity API
+- CanadaBuys vendor database
+- Apollo B2B search
+- Serper web search
+- Static directory sources
+
+**Enrichment & Matching**
+- Contact information scraping
+- Website content analysis
+- NAICS code enrichment
+- Geographic scoring
+- Capability-based matching with LLM evaluation
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/PIPELINE_WORKFLOW.md`](docs/PIPELINE_WORKFLOW.md) for detailed technical documentation.
+
+## Dashboard & Monitoring
+
+### Visual Inspection Dashboard
+
+Launch the Streamlit dashboard for real-time pipeline inspection:
+
+```bash
 ./scripts/run_dashboard.sh
 ```
 
-Dashboard opens at `http://localhost:8501` and provides:
-- **Overview**: Metrics, technical keywords, search terms
-- **Extracted Data**: Structured fields (volumes, certifications, contacts)
-- **Document Content**: All parsed sections with filtering
-- **Vendors**: Discovery and matching results with scores
-- **Debug**: Full profile dumps and API metadata
+Dashboard (http://localhost:8501) provides:
+- **Overview**: Pipeline metrics, keywords, search terms
+- **Extracted Data**: Requirements, volumes, certifications, contacts
+- **Document Content**: Parsed sections with filtering
+- **Vendors**: Discovery results, matching scores, enrichment status
+- **Debug**: Full profile dumps, API metadata, error tracking
 
 See [`docs/DASHBOARD_GUIDE.md`](docs/DASHBOARD_GUIDE.md) for detailed usage.
 
-### LLM Tracing (Optional)
+### LLM Observability
 
-For debugging prompts and LLM calls, integrate LangSmith:
+LangSmith integration for prompt debugging and performance monitoring:
 
 ```bash
-# Add to .env
+# Configure in .env
 LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your_key
+LANGCHAIN_API_KEY=your_langsmith_key
 LANGCHAIN_PROJECT=vendor-agent
-
-poetry add langsmith
 ```
 
-See [`docs/LANGSMITH_INTEGRATION.md`](docs/LANGSMITH_INTEGRATION.md) for setup.
+See [`docs/LANGSMITH_INTEGRATION.md`](docs/LANGSMITH_INTEGRATION.md) and [`docs/OBSERVABILITY_QUICKSTART.md`](docs/OBSERVABILITY_QUICKSTART.md) for setup.
 
-## Next Steps
-- Replace placeholder logic in each module with the planned implementations (deterministic parsing, GPT requirement extraction, multi-source discovery, enrichment via Apollo/Hunter, LLM capability matching).
-- Extend `RuntimeConfig` to load API keys from environment variables or a secrets manager.
-- Add persistence/caching (e.g., SQLite) for vendor data to avoid redundant enrichment.
-- Build automated tests per module as production logic is added.
+## Testing
 
-Refer to `plan.md` for the business logic and `docs/ARCHITECTURE.md` for the technical mapping of each module (including ingestion flow, document parsing, and vendor scoring).
+Run test suite:
+
+```bash
+# All tests
+pytest tests/
+
+# Specific module
+pytest tests/test_document_parser.py
+
+# With coverage
+pytest --cov=src/vendor_ai_agent tests/
+```
+
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - System architecture and design
+- [`docs/PIPELINE_WORKFLOW.md`](docs/PIPELINE_WORKFLOW.md) - Pipeline stages and data flow
+- [`docs/DASHBOARD_GUIDE.md`](docs/DASHBOARD_GUIDE.md) - Dashboard usage guide
+- [`docs/CONTACT_ENRICHMENT.md`](docs/CONTACT_ENRICHMENT.md) - Contact discovery strategies
+- [`docs/SAM_INTEGRATION.md`](docs/SAM_INTEGRATION.md) - SAM.gov integration guide
+- [`docs/LANGSMITH_INTEGRATION.md`](docs/LANGSMITH_INTEGRATION.md) - Observability setup
+- [`docs/reports/`](docs/reports/) - Milestone reports and analysis
+- [`docs/archive/`](docs/archive/) - Historical documentation and test reports
+
+## Project Status
+
+**Current Version**: Production-ready MVP  
+**Last Updated**: November 2024
+
+**Completed Features:**
+- ✅ Multi-format document parsing (PDF, DOCX, XLSX)
+- ✅ LLM-powered requirement extraction
+- ✅ Multi-source vendor discovery (SAM, CanadaBuys, Apollo, Serper)
+- ✅ Contact enrichment and scraping
+- ✅ Geographic and capability-based matching
+- ✅ PostgreSQL database with migrations
+- ✅ Visual dashboard for pipeline inspection
+- ✅ LangSmith observability integration
+
+**Recent Milestones:**
+- Milestone 1: Core pipeline implementation
+- Milestone 2: Multi-source discovery and enrichment
+
+See [`docs/reports/`](docs/reports/) for detailed milestone documentation.
+
+## Contributing
+
+For development setup and contribution guidelines, see project documentation. Test files are located in `tests/` directory.
+
+## License
+
+[Add license information]

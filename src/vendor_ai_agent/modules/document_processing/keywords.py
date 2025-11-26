@@ -37,7 +37,6 @@ SECTION_HEADING_PATTERNS = {
         "experience and qualifications",
         "eligibility requirements",
         "proponent experience",
-        "contractor experience",
         "minimum experience",
     ],
     "technical_requirements": [

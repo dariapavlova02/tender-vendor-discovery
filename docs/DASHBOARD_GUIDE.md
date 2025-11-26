@@ -1,173 +1,54 @@
-# Tender AI Agent Dashboard
+# Dashboard Guide
 
-## Observability Dashboard для отладки ML Pipeline
+This guide reflects the current Streamlit dashboard (`src/vendor_ai_agent/dashboard.py`). All instructions are written in English and describe the UI as shipped today.
 
-Dashboard предоставляет полную визуализацию всех этапов обработки:
-- **Parsing**: Просмотр извлеченных секций и таблиц из PDF
-- **Profiling**: Анализ keywords и search terms, генерируемых LLM
-- **Extraction**: Проверка структурированных данных (volumes, certifications, contact info)
-- **Vendors**: Список найденных и ранжированных вендоров
+## Launching the Dashboard
 
----
-
-## 🚀 Быстрый старт
-
-### 1. Установка зависимостей
-
-```bash
-poetry install
-```
-
-Это установит `streamlit` и все необходимые зависимости.
-
-### 2. Запуск Dashboard
-
-**Вариант A: Через скрипт**
-```bash
-chmod +x scripts/run_dashboard.sh
-./scripts/run_dashboard.sh
-```
-
-**Вариант B: Напрямую через poetry**
 ```bash
 poetry run streamlit run src/vendor_ai_agent/dashboard.py
 ```
 
-**Вариант C: Через python**
-```bash
-poetry shell
-python -m streamlit run src/vendor_ai_agent/dashboard.py
-```
+The command opens the Streamlit app in the default browser. Use the sidebar to configure a run before uploading tender files.
 
-Dashboard откроется автоматически в браузере по адресу: `http://localhost:8501`
+## Sidebar Configuration
 
----
+- **Analysis mode** – presets that enable/disable website scraping, contact scraping, and LLM scoring.
+- **Maximum vendors to analyze** – slider controlling how many candidates are allowed to pass the filtering stage.
+- **Batch processing block** – `Vendors per batch`, `Batch number`, and `Reuse cached vendors` control batch slicing and cache usage.
+- **Auto ingestion** – toggle that determines whether the pipeline attempts to fetch attachments based on identifiers present in the tender.
+- **Manual review** – if enabled, the pipeline pauses after extraction so the user can adjust city/state/country and NAICS codes before discovery.
+- **API key status** – indicators for OpenAI and Apollo keys; Apollo-specific controls remain disabled when the key is missing.
 
-## 📊 Возможности Dashboard
+## Upload and Run Flow
 
-### Tab 1: Overview
-- Метрики: Total Sections, Sector, Vendors Discovered, Final Matches
-- Technical Keywords (топ-15)
-- Search Terms для vendor discovery
+1. Upload one or more tender files (PDF/DOCX/XLSX). The UI stores them under `data/temp_upload/`.
+2. Optionally deselect irrelevant files using the “Document Selection” section.
+3. Click **Run Pipeline**. While the run is in progress, the UI shows stage-by-stage progress bars.
+4. After completion, review the tabs (Overview, Extracted Data, Document Content, Vendors, Debug).
 
-### Tab 2: Extracted Data
-- **Basic Info**: Reference numbers, Location, Contact info
-- **Requirements**: Volume items, Certifications, Licenses
-- **Raw JSON**: Полный дамп `StructuredDocData`
+## Vendors Tab
 
-### Tab 3: Document Content
-- Просмотр всех распарсенных секций
-- Фильтрация по типу (text, table, qa_pair, addendum)
-- Предварительный просмотр контента и метаданных
+- Shows selected vendors, all scored candidates, and metrics (raw count, matches, scored candidates, average score, past winners, missing contacts).
+- When an Apollo key is configured, the section exposes:
+  - Bulk buttons “Fetch emails (N)” and “Fetch phones (M)” for vendors lacking the corresponding contact field.
+  - Per-vendor buttons that allow targeted Apollo enrichment.
+- The tab always displays the current batch ID and the list of processed batches when caching is enabled.
 
-### Tab 4: Vendors
-- **Final Matches**: Топовые вендоры с capability score
-- **All Discovered**: Полный список после enrichment
-- **Stats**: Метрики по pipeline (raw → enriched → matched)
+## Batch Navigation
 
-### Tab 5: Debug
-- Полный дамп `TenderProfile`
-- API Metadata
-- Dynamic Context
+- When `Reuse cached vendors` is enabled, the pipeline stores filtered vendors for future batches. The dashboard keeps the latest `PipelineArtifacts` in `st.session_state` so a page rerun (triggered by Streamlit) does not discard results.
+- To move to the next batch, change `Batch number` in the sidebar and run the pipeline again. A cached batch is loaded instantly without repeating discovery.
+- The “Clear cached results” button appears whenever the dashboard is showing artifacts from a previous run; clicking it removes cached session data so the next run starts cleanly.
 
----
+## Export Controls
 
-## 🛠 Настройки (Sidebar)
+After a run completes, the Export section provides:
+- CSV download of the current matches.
+- Excel workbook with matches.
+- “Save to outputs” button that writes the usual JSON/CSV/XLSX trio via `Pipeline.save_outputs`.
 
-- **LLM Model**: Выбор между `gpt-5-mini` (дешево) и `gpt-5.1` (качество)
-- **Use Flex Tier**: Включить Flex Tier OpenAI для снижения стоимости
-- **Auto Ingestion**: Автоматическое скачивание attachments из Canada Buys API
+## Known Limitations
 
----
-
-## 🐛 Отладка
-
-### Проблема: "Import streamlit could not be resolved"
-
-**Решение:**
-```bash
-poetry add streamlit
-poetry install
-```
-
-### Проблема: "No module named 'vendor_ai_agent'"
-
-**Решение:**
-```bash
-poetry shell
-export PYTHONPATH="${PYTHONPATH}:$(pwd)/src"
-streamlit run src/vendor_ai_agent/dashboard.py
-```
-
-### Проблема: Pipeline зависает на этапе parsing
-
-**Решение:** Проверьте размер PDF файлов. Для больших файлов (>100 страниц) используйте:
-- Добавьте `st.spinner()` для отображения прогресса
-- Включите debug logging в sidebar
-
----
-
-## 📝 Пример использования
-
-1. Запустите dashboard
-2. Загрузите тестовый tender из `data/Object _ rfx_18106 - OPP-1984/`
-3. Выберите модель `gpt-5-mini` для быстрого теста
-4. Нажмите "Run Pipeline"
-5. Проверьте результаты:
-   - **Overview**: Убедитесь, что sector определен корректно
-   - **Extracted Data**: Проверьте, что volumes извлечены правильно
-   - **Document Content**: Найдите таблицы с pricing
-   - **Vendors**: Посмотрите топ-10 matched vendors
-
----
-
-## 🔧 Расширение Dashboard
-
-### Добавление новой метрики
-
-Отредактируйте функцию `render_overview_tab()` в `dashboard.py`:
-
-```python
-with col5:
-    st.metric("Your Metric", your_value)
-```
-
-### Добавление нового Tab
-
-```python
-with tab6:
-    st.subheader("Your Custom Tab")
-    st.json(your_data)
-```
-
----
-
-## 🚀 Production Deployment
-
-Для production deployment используйте:
-
-```bash
-poetry run streamlit run src/vendor_ai_agent/dashboard.py \
-    --server.port 8501 \
-    --server.address 0.0.0.0 \
-    --server.headless true
-```
-
-**Docker:**
-```dockerfile
-FROM python:3.10-slim
-WORKDIR /app
-COPY pyproject.toml poetry.lock ./
-RUN pip install poetry && poetry install --no-dev
-COPY . .
-EXPOSE 8501
-CMD ["poetry", "run", "streamlit", "run", "src/vendor_ai_agent/dashboard.py", "--server.headless", "true"]
-```
-
----
-
-## 📚 Дополнительные ресурсы
-
-- [Streamlit Documentation](https://docs.streamlit.io/)
-- [Pipeline Architecture](../docs/ARCHITECTURE.md)
-- [Pipeline Workflow](../docs/PIPELINE_WORKFLOW.md)
+- Reloading the browser tab resets the Streamlit session. Cached artifacts in `st.session_state` are cleared, so keep the tab open while reviewing results.
+- Only one batch can be processed at a time in the UI. To schedule multiple batches automatically, use the CLI or a background script.
+- Apollo enrichment buttons require `APOLLO_API_KEY` to be present in the environment running Streamlit.

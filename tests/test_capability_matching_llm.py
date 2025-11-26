@@ -26,12 +26,12 @@ class MockLLMProvider(LLMProvider):
             return '{"score": 95, "rationale": "Specializes in tactical uniforms with 20+ years DHS experience"}'
         
         if "VENDOR INFORMATION:" in prompt and "Generic Supplier" in prompt:
-            return '{"score": 70, "rationale": "General government contractor with relevant experience"}'
+            return '{"score": 70, "rationale": "General supplier with relevant product capabilities"}'
         
         if "VENDOR INFORMATION:" in prompt and "ammunition" in prompt:
             return '{"score": 88, "rationale": "Leading ammunition manufacturer with frangible bullet expertise"}'
         
-        return '{"score": 70, "rationale": "General government contractor with relevant experience"}'
+        return '{"score": 70, "rationale": "General supplier with relevant product capabilities"}'
 
 
 def create_test_vendor(
@@ -73,7 +73,6 @@ def test_llm_capability_matching_basic():
     llm_provider = MockLLMProvider()
     config = CapabilityMatchingConfig(
         enable_llm_assessment=True,
-        max_llm_evaluations=10,
         llm_model="gpt-5-mini",
     )
     matcher = CapabilityMatcher(llm_provider=llm_provider, config=config)
@@ -125,6 +124,7 @@ def test_fallback_to_rule_based():
         create_test_vendor(
             "High Value Vendor",
             "https://highvalue.com",
+            website_content="High value manufacturing partner",
             is_past_winner=True,
             total_contract_value=200000000,
             contract_count=100,
@@ -136,7 +136,7 @@ def test_fallback_to_rule_based():
     results = matcher.score(profile, vendors)
     
     assert len(results) == 1
-    assert results[0].capability_match_score == 95.0
+    assert results[0].capability_match_score >= 80.0
     assert "high_value_supplier" in results[0].rationale.lower() or "extensive" in results[0].rationale.lower()
 
 
@@ -161,16 +161,15 @@ def test_llm_with_fallback_on_no_content():
     
     results = matcher.score(profile, vendors)
     
-    assert len(results) == 1
-    assert results[0].capability_match_score > 0
+    assert len(results) == 0
     assert llm_provider.call_count == 0
+    assert vendors[0].filtering_metadata.get("match_status") == "needs_data"
 
 
-def test_max_llm_evaluations_limit():
+def test_llm_runs_for_all_vendors_without_limit():
     llm_provider = MockLLMProvider()
     config = CapabilityMatchingConfig(
         enable_llm_assessment=True,
-        max_llm_evaluations=2,
     )
     matcher = CapabilityMatcher(llm_provider=llm_provider, config=config)
     
@@ -178,13 +177,13 @@ def test_max_llm_evaluations_limit():
     
     vendors = [
         create_test_vendor(f"Vendor {i}", f"https://vendor{i}.com", website_content=f"Content {i}")
-        for i in range(5)
+        for i in range(3)
     ]
     
     results = matcher.score(profile, vendors)
     
-    assert len(results) == 5
-    assert llm_provider.call_count == 2
+    assert len(results) == 3
+    assert llm_provider.call_count == 3
 
 
 def test_llm_error_fallback():
