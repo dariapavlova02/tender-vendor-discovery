@@ -98,6 +98,14 @@ def render_config_sidebar() -> RuntimeConfig:
                 config.enrichment.enable_contact_scraping = True
                 config.capability_matching.llm_parallelism = 8
 
+        scoring_model = st.selectbox(
+            "LLM model for capability scoring",
+            options=["gpt-5-mini", "gpt-5.1"],
+            index=0 if config.capability_matching.llm_model == "gpt-5-mini" else 1,
+            help="Use gpt-5-mini for faster, cheaper scoring or gpt-5.1 for maximum accuracy.",
+        )
+        config.capability_matching.llm_model = scoring_model
+
         max_results = st.slider(
             "Maximum vendors to analyze",
             min_value=100,
@@ -120,8 +128,8 @@ def render_config_sidebar() -> RuntimeConfig:
         config.discovery.max_government_source_percentage = max_govt_pct / 100
 
         use_places_api = st.checkbox(
-            "Use Serper Places API (recommended)",
-            value=config.discovery.serper_use_places_api,
+            "Use Serper Places API",
+            value=False,
             help="Places API provides phone numbers, ratings, and coordinates directly. Disable to use regular Search API for broader web results.",
         )
         config.discovery.serper_use_places_api = use_places_api
