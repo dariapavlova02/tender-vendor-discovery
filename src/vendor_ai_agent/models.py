@@ -305,6 +305,13 @@ class DynamicTenderContext:
     unspsc_codes: List[str] = field(default_factory=list)
     province: Optional[str] = None
     country: Optional[str] = None
+    
+    contract_type: Optional[str] = None
+    contract_type_confidence: float = 0.0
+    fulfillment_model: Optional[str] = None
+    primary_deliverables: List[str] = field(default_factory=list)
+    vendor_inputs: List[str] = field(default_factory=list)
+    location: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

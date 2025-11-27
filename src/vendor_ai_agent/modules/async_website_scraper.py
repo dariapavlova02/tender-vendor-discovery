@@ -449,14 +449,33 @@ class AsyncWebsiteScraper:
                 content_type = response.headers.get("Content-Type", "")
 
                 text = None
+                httpx_got_html = False
                 if "text" in content_type or "html" in content_type:
+                    httpx_got_html = True
                     text = self._extract_text_from_html(
                         response.text,
                         strip_navigation=True,
                         include_mailto=False,
                         min_length=100,
                     )
-
+                
+                if text:
+                    return _result(text)
+                
+                if httpx_got_html and self.enable_playwright_fallback:
+                    self.logger.debug(f"HTTPx got HTML but extraction failed for {url}, trying Playwright")
+                    fallback = await self._fetch_with_playwright(
+                        url,
+                        timeout=timeout,
+                        strip_navigation=True,
+                        include_mailto=False,
+                        min_length=100,
+                        domain=target_domain,
+                    )
+                    if fallback:
+                        status_code = 200
+                        return _result(fallback)
+                
                 return _result(text)
 
             except httpx.HTTPStatusError as e:
@@ -732,13 +751,32 @@ class AsyncWebsiteScraper:
                 content_type = response.headers.get("Content-Type", "")
 
                 text = None
+                httpx_got_html = False
                 if "text" in content_type or "html" in content_type:
+                    httpx_got_html = True
                     text = self._extract_text_from_html(
                         response.text,
                         strip_navigation=False,
                         include_mailto=True,
                         min_length=50,
                     )
+                
+                if text:
+                    return text
+                
+                if httpx_got_html and self.enable_playwright_fallback:
+                    self.logger.debug(f"HTTPx got HTML but extraction failed for contact page {url}, trying Playwright")
+                    fallback = await self._fetch_with_playwright(
+                        url,
+                        timeout=timeout,
+                        strip_navigation=False,
+                        include_mailto=True,
+                        min_length=50,
+                        domain=target_domain,
+                    )
+                    if fallback:
+                        return fallback
+                
                 return text
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
