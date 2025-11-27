@@ -88,7 +88,8 @@ def check_authentication():
             flow = get_google_oauth_flow()
             authorization_url, state = flow.authorization_url(
                 access_type="offline",
-                include_granted_scopes="true"
+                include_granted_scopes="true",
+                prompt="select_account"
             )
             st.session_state.oauth_state = state
             st.markdown(f'<meta http-equiv="refresh" content="0;url={authorization_url}">', unsafe_allow_html=True)
