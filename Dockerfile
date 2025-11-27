@@ -53,4 +53,4 @@ ENV STREAMLIT_SERVER_HEADLESS=true
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
-CMD ["streamlit", "run", "src/vendor_ai_agent/dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["bash", "-lc", "streamlit run src/vendor_ai_agent/dashboard.py --server.port ${PORT:-$STREAMLIT_SERVER_PORT} --server.address ${STREAMLIT_SERVER_ADDRESS}"]

@@ -1,0 +1,257 @@
+{
+  "metadata": {
+    "created": "2025-11-23",
+    "purpose": "Field mappings for Canada data source integration",
+    "target_table": "vendors",
+    "deduplication_key": "external_id = hash(legal_name + normalized_postal_code)"
+  },
+  
+  "normalization_rules": {
+    "postal_code": "strip().replace(' ', '').upper()[:6]",
+    "legal_name": "strip().upper()",
+    "country": "strip().upper()",
+    "date_format": "YYYY-MM-DD"
+  },
+  
+  "sources": {
+    "contract_history": {
+      "file": "data/contracts_complete_2009-2023.csv",
+      "record_count": 561824,
+      "unique_vendors": 42770,
+      "date_range": "2009-2023",
+      "mapping": {
+        "legal_name": "vendor_name",
+        "postal_code": "postal_code",
+        "country": "country",
+        "contract_date": "contract_date",
+        "reference_number": "reference_number"
+      },
+      "status": "INGESTED - needs postal_code normalization fix"
+    },
+    
+    "award_notices": {
+      "file": "data/canada_sources/award_notices/award_notices.csv",
+      "url": "https://canadabuys.canada.ca/opendata/pub/awardNoticeComplete-avisAttributionComplet.csv",
+      "record_count": 560571,
+      "unique_vendors": 11794,
+      "date_range": "2022-08-08 to 2025-11-22",
+      "update_frequency": "daily/weekly",
+      "mapping": {
+        "legal_name": "supplierLegalName-nomLegalFournisseur-eng",
+        "address_line": "supplierAddressLine-ligneAdresseFournisseur-eng",
+        "city": "supplierAddressCity-fournisseurAdresseVille-eng",
+        "province": "supplierAddressProvince-fournisseurAdresseProvince-eng",
+        "postal_code": "supplierAddressPostalCode-fournisseurAdresseCodePostal",
+        "country": "supplierAddressCountry-fournisseurAdressePays-eng",
+        "contract_date": "contractAwardDate-dateAttributionContrat",
+        "contract_number": "contractNumber-numeroContrat",
+        "contract_amount": "contractAmount-montantContrat",
+        "total_contract_value": "totalContractValue-valeurTotaleContrat",
+        "gsin_codes": "gsin-nibs",
+        "unspsc_codes": "unspsc",
+        "procurement_method": "procurementMethod-methodeApprovisionnement-eng",
+        "trade_agreements": "tradeAgreements-accordsCommerciaux-eng",
+        "regions_delivery": "regionsOfDelivery-regionsLivraison-eng"
+      },
+      "array_fields": {
+        "gsin_codes": "split by newline",
+        "unspsc_codes": "split by comma",
+        "trade_agreements": "split by *",
+        "regions_delivery": "split by comma"
+      },
+      "status": "READY TO INGEST"
+    },
+    
+    "standing_offers": {
+      "file": "data/canada_sources/standing_offers/sosa.csv",
+      "url": "https://sosa.canadabuys.canada.ca/cds/opendata/tpsgc-pwgsc_ocama-sosa.csv",
+      "record_count": 7506,
+      "unique_vendors": 3151,
+      "date_range": "2006-2121",
+      "update_frequency": "weekly",
+      "mapping": {
+        "legal_name": "supplier-legal-name",
+        "standardized_name": "supplier-standardized-name",
+        "operating_name": "supplier-operating-name",
+        "agreement_number": "agreement-number",
+        "agreement_type": "agreement-type_en",
+        "commodity_codes": "commodity",
+        "award_date": "award-date",
+        "expiry_date": "expiry-date",
+        "delivery_point": "delivery-point_en",
+        "end_user_entity": "end-user-entity_en"
+      },
+      "array_fields": {
+        "commodity_codes": "split by comma"
+      },
+      "special_handling": {
+        "operating_names": "append to JSON array per vendor",
+        "standing_offers": "append agreement_number to JSON array per vendor",
+        "agreement_types": "append agreement_type to JSON array per vendor",
+        "is_prequalified": "set TRUE for all SOSA vendors",
+        "prequalification_expiry": "use MAX(expiry_date) for vendor"
+      },
+      "status": "READY TO INGEST"
+    }
+  },
+  
+  "target_schema": {
+    "existing_fields": [
+      "id",
+      "external_id",
+      "legal_name",
+      "postal_code",
+      "country",
+      "source",
+      "source_metadata",
+      "created_at",
+      "updated_at"
+    ],
+    "new_fields_proposed": [
+      {
+        "name": "address_line",
+        "type": "TEXT",
+        "nullable": true,
+        "source": "award_notices"
+      },
+      {
+        "name": "city",
+        "type": "TEXT",
+        "nullable": true,
+        "source": "award_notices"
+      },
+      {
+        "name": "province",
+        "type": "TEXT",
+        "nullable": true,
+        "source": "award_notices"
+      },
+      {
+        "name": "gsin_codes",
+        "type": "TEXT",
+        "description": "JSON array of GSIN codes",
+        "nullable": true,
+        "source": "award_notices"
+      },
+      {
+        "name": "unspsc_codes",
+        "type": "TEXT",
+        "description": "JSON array of UNSPSC codes",
+        "nullable": true,
+        "source": "award_notices"
+      },
+      {
+        "name": "commodity_codes",
+        "type": "TEXT",
+        "description": "JSON array of commodity codes",
+        "nullable": true,
+        "source": "standing_offers"
+      },
+      {
+        "name": "standing_offers",
+        "type": "TEXT",
+        "description": "JSON array of agreement numbers",
+        "nullable": true,
+        "source": "standing_offers"
+      },
+      {
+        "name": "agreement_types",
+        "type": "TEXT",
+        "description": "JSON array of agreement types",
+        "nullable": true,
+        "source": "standing_offers"
+      },
+      {
+        "name": "operating_names",
+        "type": "TEXT",
+        "description": "JSON array of DBA names",
+        "nullable": true,
+        "source": "standing_offers"
+      },
+      {
+        "name": "data_sources",
+        "type": "TEXT",
+        "description": "JSON array of source systems",
+        "nullable": true,
+        "example": "[\"contract_history\", \"award_notices\", \"sosa\"]"
+      },
+      {
+        "name": "last_contract_date",
+        "type": "DATE",
+        "nullable": true,
+        "source": "all"
+      },
+      {
+        "name": "total_contract_value",
+        "type": "DECIMAL(20,2)",
+        "nullable": true,
+        "source": "award_notices"
+      },
+      {
+        "name": "is_prequalified",
+        "type": "BOOLEAN",
+        "default": false,
+        "source": "standing_offers"
+      },
+      {
+        "name": "prequalification_expiry",
+        "type": "DATE",
+        "nullable": true,
+        "source": "standing_offers"
+      }
+    ]
+  },
+  
+  "merge_logic": {
+    "on_duplicate_vendor": {
+      "strategy": "MERGE",
+      "rules": {
+        "scalar_fields": "COALESCE(new_value, old_value)",
+        "array_fields": "UNION(old_array, new_array)",
+        "date_fields": "MAX(old_date, new_date)",
+        "numeric_fields": "SUM(old_value, new_value)",
+        "boolean_fields": "OR(old_value, new_value)"
+      }
+    },
+    "example": {
+      "vendor_exists": {
+        "legal_name": "Acme Corp",
+        "postal_code": "K1P5T8",
+        "gsin_codes": "[\"*JX6605\"]",
+        "last_contract_date": "2023-05-15"
+      },
+      "new_record": {
+        "legal_name": "ACME CORP",
+        "postal_code": "K1P 5T8",
+        "gsin_codes": "[\"*B002A\"]",
+        "last_contract_date": "2024-11-20"
+      },
+      "merged_result": {
+        "legal_name": "Acme Corp",
+        "postal_code": "K1P5T8",
+        "gsin_codes": "[\"*JX6605\", \"*B002A\"]",
+        "last_contract_date": "2024-11-20",
+        "data_sources": "[\"contract_history\", \"award_notices\"]"
+      }
+    }
+  },
+  
+  "data_quality_checks": {
+    "postal_code": {
+      "rule": "length >= 5 AND length <= 7 after strip",
+      "action": "normalize to 6 chars, uppercase, no spaces"
+    },
+    "legal_name": {
+      "rule": "not empty after strip",
+      "action": "reject record if empty"
+    },
+    "dates": {
+      "rule": "valid ISO format YYYY-MM-DD",
+      "action": "parse and validate, null if invalid"
+    },
+    "contract_values": {
+      "rule": "numeric, can be negative (adjustments)",
+      "action": "parse as decimal, null if invalid"
+    }
+  }
+}
