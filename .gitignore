@@ -11,6 +11,10 @@ outputs/
 
 # Large data files
 data/canada_history/*.csv
+data/canada_sources/**/*.csv
+data/canada_sources/**/*.docx
+data/temp_upload/**/*
+data/test_case/**/*
 
 # Database files
 *.db
