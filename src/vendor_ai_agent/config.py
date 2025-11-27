@@ -43,6 +43,8 @@ class DiscoveryConfig:
     serper_max_queries: int = 50
     serper_discovery_always_canada: bool = True
     serper_use_places_api: bool = True
+    serper_contract_aware_queries: bool = True
+    serper_geo_query_expansion: bool = True
     enable_batch_cache: bool = True
     batch_size: int = 500
     processing_batch: int = 1

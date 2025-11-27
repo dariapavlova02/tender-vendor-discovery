@@ -288,64 +288,143 @@ class SerperVendorSource(BaseVendorSource):
         return all_vendors
     
     def _generate_queries(self, profile: TenderProfile, target_count: Optional[int] = None) -> List[str]:
-        queries = []
-        
-        sector = None
-        if profile.dynamic_context and profile.dynamic_context.sector:
-            sector = profile.dynamic_context.sector
-        elif profile.doc_extracted and profile.doc_extracted.structured:
-            sector = profile.doc_extracted.structured.project_type or "contractor"
-        
-        location = None
-        state = None
-        country = None
+        contract_type = None
+        fulfillment_model = None
         
         if profile.dynamic_context:
-            country = profile.dynamic_context.country
+            contract_type = getattr(profile.dynamic_context, 'contract_type', None)
+            fulfillment_model = getattr(profile.dynamic_context, 'fulfillment_model', None)
         
-        if profile.api_metadata and profile.api_metadata.place_of_performance:
-            pop = profile.api_metadata.place_of_performance
-            location = pop.city
-            state = pop.state_province
-            country = country or pop.country
+        if not contract_type:
+            contract_type = "unknown"
         
-        if not sector or sector.lower() in ("unknown", "null", "none", "n/a"):
-            sector = "contractor"
+        self.logger.info(f"Query generation: contract_type={contract_type}, fulfillment_model={fulfillment_model}")
         
-        queries.append(f"{sector} supplier manufacturer")
-        queries.append(f"government {sector} contractor")
-        queries.append(f"{sector} manufacturer")
+        SERVICE_TOXIC_TERMS = {
+            'supplier', 'manufacturer', 'distributor', 'equipment', 'oem',
+            'training', 'consultant', 'saas', 'rental', 'dealer', 'wholesaler',
+            'producer', 'fabricator', 'vendor'
+        }
+        
+        PRODUCT_TOXIC_TERMS = {
+            'services', 'contractor', 'consulting', 'advisory', 'maintenance'
+        }
+        
+        CONSULTING_TOXIC_TERMS = {
+            'supplier', 'manufacturer', 'equipment', 'contractor'
+        }
+        
+        base_queries = []
         
         if profile.dynamic_context and profile.dynamic_context.search_terms:
             for term in profile.dynamic_context.search_terms:
-                queries.append(term)
+                term_lower = term.lower()
+                
+                if self.config and self.config.discovery.serper_contract_aware_queries:
+                    
+                    if contract_type == "service":
+                        if any(toxic in term_lower for toxic in SERVICE_TOXIC_TERMS):
+                            self.logger.debug(f"  Filtered (service contract): {term}")
+                            continue
+                    
+                    elif contract_type == "product":
+                        if any(toxic in term_lower for toxic in PRODUCT_TOXIC_TERMS):
+                            self.logger.debug(f"  Filtered (product contract): {term}")
+                            continue
+                    
+                    elif contract_type == "consulting":
+                        if any(toxic in term_lower for toxic in CONSULTING_TOXIC_TERMS):
+                            self.logger.debug(f"  Filtered (consulting contract): {term}")
+                            continue
+                
+                base_queries.append(term)
         
-        if profile.dynamic_context and profile.dynamic_context.technical_keywords:
-            for keyword in profile.dynamic_context.technical_keywords[:10]:
-                queries.append(f"{keyword} supplier")
-        
-        naics_codes = profile.api_metadata.codes.naics if profile.api_metadata else []
-        if naics_codes:
-            for naics in naics_codes[:3]:
-                queries.append(f"NAICS {naics} contractor")
-                if sector:
-                    queries.append(f"NAICS {naics} {sector} manufacturer")
-        
-        queries = [q.strip() for q in queries if len(q.strip()) > 10]
+        if not base_queries:
+            sector = None
+            if profile.dynamic_context and profile.dynamic_context.sector:
+                sector = profile.dynamic_context.sector
+            elif profile.doc_extracted and profile.doc_extracted.structured:
+                sector = profile.doc_extracted.structured.project_type or "contractor"
+            
+            if not sector or sector.lower() in ("unknown", "null", "none", "n/a"):
+                sector = "contractor"
+            
+            if contract_type == "service":
+                base_queries = [
+                    f"{sector} contractor",
+                    f"{sector} services",
+                    f"government {sector} contractor"
+                ]
+            elif contract_type == "product":
+                base_queries = [
+                    f"{sector} manufacturer",
+                    f"{sector} supplier",
+                    f"{sector} distributor"
+                ]
+            elif contract_type == "consulting":
+                base_queries = [
+                    f"{sector} consultant",
+                    f"{sector} advisory services",
+                    f"{sector} consulting firm"
+                ]
+            else:
+                base_queries = [f"{sector} contractor", f"{sector} services"]
         
         seen = set()
-        unique_queries = []
-        for q in queries:
-            q_lower = q.lower()
-            if q_lower not in seen:
+        unique_base = []
+        for q in base_queries:
+            q_lower = q.lower().strip()
+            if q_lower and q_lower not in seen and len(q_lower) > 10:
                 seen.add(q_lower)
-                unique_queries.append(q)
+                unique_base.append(q)
+        
+        self.logger.info(f"Generated {len(unique_base)} unique base queries")
+        
+        geo_sequenced_queries = []
+        
+        if self.config and self.config.discovery.serper_geo_query_expansion:
+            
+            city = None
+            region = None
+            country = None
+            
+            if profile.api_metadata and profile.api_metadata.place_of_performance:
+                pop = profile.api_metadata.place_of_performance
+                city = pop.city
+                region = pop.state_province
+                country = pop.country
+            
+            if not country and profile.dynamic_context:
+                country = profile.dynamic_context.country
+            
+            geo_levels = []
+            if city:
+                geo_levels.append(("city", city))
+            if region:
+                geo_levels.append(("region", region))
+            if country:
+                geo_levels.append(("country", country))
+            
+            self.logger.info(f"Geographic expansion: {len(geo_levels)} levels")
+            
+            for level_name, location in geo_levels:
+                for query in unique_base:
+                    geo_sequenced_queries.append(f"{query} {location}")
+                self.logger.debug(f"  Added {len(unique_base)} {level_name} queries")
+            
+            geo_sequenced_queries.extend(unique_base)
+            self.logger.debug(f"  Added {len(unique_base)} global queries")
+            
+            final_queries = geo_sequenced_queries
+        
+        else:
+            final_queries = unique_base
         
         if target_count:
             estimated_queries_needed = min(50, (target_count // 10) + 5)
-            return unique_queries[:estimated_queries_needed]
+            return final_queries[:estimated_queries_needed]
         
-        return unique_queries[:50]
+        return final_queries[:50]
     
     def _extract_domain(self, url: str) -> str:
         try:
