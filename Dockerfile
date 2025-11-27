@@ -43,7 +43,7 @@ RUN playwright install chromium --with-deps
 
 COPY . .
 
-RUN poetry install --no-interaction --no-ansi
+RUN poetry install --no-interaction --no-ansi --only-root
 
 EXPOSE 8501
 
@@ -52,5 +52,6 @@ ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 ENV STREAMLIT_SERVER_HEADLESS=true
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+ENV PYTHONPATH=/app/src:$PYTHONPATH
 
 CMD ["bash", "-lc", "streamlit run src/vendor_ai_agent/dashboard.py --server.port ${PORT:-$STREAMLIT_SERVER_PORT} --server.address ${STREAMLIT_SERVER_ADDRESS}"]
