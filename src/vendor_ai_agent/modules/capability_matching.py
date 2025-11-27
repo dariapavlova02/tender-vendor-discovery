@@ -143,37 +143,50 @@ class CapabilityMatcher(CapabilityMatcherContract):
         
         prompt = f"""You are a product/service matching AI. Determine if this vendor SELLS what the tender needs.
 
-RULES:
-1. Website content = PRIMARY (80%), metadata = SECONDARY (20%)
-2. Focus: What do they offer TODAY? Ignore past contracts as proof of capability.
-3. Lobbying offices, associations, advocacy groups = score < 10 regardless of metadata
+ABSOLUTE RULES (NO EXCEPTIONS):
+1. NO direct quote from website content → score MUST be ≤20
+2. Associations, lobbying offices, advocacy groups → score 0-20 max (regardless of metadata)
+3. NO specific product/service mention → score 0-40 max
+4. Vague corporate language DOES NOT count as evidence: "solutions", "projects", "capabilities", "innovation", "integrated systems", "consulting", "services" (without specifics)
+5. When uncertain between bands → choose LOWER band by default
 
-SCORING:
-100-90: PERFECT - Sells exactly what tender needs
-89-70: STRONG - Relevant products in same vertical
-69-50: MODERATE - Related industry, potential capability
-49-30: WEAK - Tangential relevance, major gaps
-29-0: NO MATCH - Unrelated, lobbying office, or association
+CORE RULES:
+- Website content = PRIMARY evidence (80%), metadata = SECONDARY (20%)
+- Focus: What do they offer TODAY? Past contracts are NOT proof of current capability.
+- Require CONCRETE nouns (e.g., "vehicles", "ammunition", "software licenses"), NOT marketing buzzwords
 
-METADATA (apply AFTER scoring):
-- Score ≥70 + past_winner: +5 | Score ≥60 + high_value_supplier: +5
-- Score <50: ignore all metadata
+SCORING BANDS:
+100-90: PERFECT - Sells EXACTLY what tender needs (must quote specific product names)
+89-70: STRONG - Sells products in tender's category (must cite product lines/catalogs)
+69-50: MODERATE - Related industry with documented offerings (some product evidence required)
+49-30: WEAK - Tangential relevance only (vague connection, major gaps)
+29-0: NO MATCH - Unrelated, lobbying/association/advocacy, or no product evidence
+
+METADATA (apply ONLY if conditions met):
+- Base score ≥70 + past_winner → +5
+- Base score ≥60 + high_value_supplier → +5
+- Base score <50 → ignore ALL metadata (no bonus)
 
 EXAMPLES:
 
 Ex1: Perfect Match
-Tender: "Hospital beds" | Website: "MedEquip - hospital bed manufacturer"
-→ Score: 95 | Rationale: "Band: Perfect Match — Evidence: 'hospital beds' in catalog"
+Tender: "Hospital beds" | Website: "MedEquip - hospital bed manufacturer, ICU bed catalog"
+→ Score: 95 | Rationale: "Band: PERFECT — Evidence: 'hospital beds' + 'ICU bed catalog'"
 
-Ex2: NO MATCH - Lobbying (prevent false positive!)
-Tender: "Utility vehicles" | Website: "Natural Gas Vehicle Alliance - lobbying office"
+Ex2: NO MATCH - Lobbying (metadata ignored!)
+Tender: "Utility vehicles" | Website: "Natural Gas Vehicle Alliance - lobbying office for NGV adoption"
 Metadata: past_winner, $5.5M contracts
-→ Score: 5 | Rationale: "Band: No Match — Evidence: 'lobbying office', not supplier"
+→ Score: 5 | Rationale: "Band: NO MATCH — Evidence: 'lobbying office', not supplier"
 
-Ex3: NO MATCH - Association (ignore metadata!)
-Tender: "Ammunition" | Website: "Defense Contractors Assoc - advocacy group"
+Ex3: NO MATCH - Association (metadata ignored!)
+Tender: "Ammunition" | Website: "Defense Contractors Assoc - advocacy group for defense industry"
 Metadata: past_winner, $10M, 50 contracts
-→ Score: 8 | Rationale: "Band: No Match — Evidence: 'association', not supplier"
+→ Score: 8 | Rationale: "Band: NO MATCH — Evidence: 'association', not supplier"
+
+Ex4: WEAK - Vague language only
+Tender: "Software licenses" | Website: "TechCorp - we provide innovative solutions and consulting"
+Metadata: None
+→ Score: 20 | Rationale: "Band: WEAK — Evidence: No specific products, only 'solutions' (vague)"
 
 ---
 TENDER: {tender_requirements}
@@ -249,37 +262,50 @@ Return JSON:
         
         prompt = f"""You are a product/service matching AI. Determine if this vendor SELLS what the tender needs.
 
-RULES:
-1. Website content = PRIMARY (80%), metadata = SECONDARY (20%)
-2. Focus: What do they offer TODAY? Ignore past contracts as proof of capability.
-3. Lobbying offices, associations, advocacy groups = score < 10 regardless of metadata
+ABSOLUTE RULES (NO EXCEPTIONS):
+1. NO direct quote from website content → score MUST be ≤20
+2. Associations, lobbying offices, advocacy groups → score 0-20 max (regardless of metadata)
+3. NO specific product/service mention → score 0-40 max
+4. Vague corporate language DOES NOT count as evidence: "solutions", "projects", "capabilities", "innovation", "integrated systems", "consulting", "services" (without specifics)
+5. When uncertain between bands → choose LOWER band by default
 
-SCORING:
-100-90: PERFECT - Sells exactly what tender needs
-89-70: STRONG - Relevant products in same vertical
-69-50: MODERATE - Related industry, potential capability
-49-30: WEAK - Tangential relevance, major gaps
-29-0: NO MATCH - Unrelated, lobbying office, or association
+CORE RULES:
+- Website content = PRIMARY evidence (80%), metadata = SECONDARY (20%)
+- Focus: What do they offer TODAY? Past contracts are NOT proof of current capability.
+- Require CONCRETE nouns (e.g., "vehicles", "ammunition", "software licenses"), NOT marketing buzzwords
 
-METADATA (apply AFTER scoring):
-- Score ≥70 + past_winner: +5 | Score ≥60 + high_value_supplier: +5
-- Score <50: ignore all metadata
+SCORING BANDS:
+100-90: PERFECT - Sells EXACTLY what tender needs (must quote specific product names)
+89-70: STRONG - Sells products in tender's category (must cite product lines/catalogs)
+69-50: MODERATE - Related industry with documented offerings (some product evidence required)
+49-30: WEAK - Tangential relevance only (vague connection, major gaps)
+29-0: NO MATCH - Unrelated, lobbying/association/advocacy, or no product evidence
+
+METADATA (apply ONLY if conditions met):
+- Base score ≥70 + past_winner → +5
+- Base score ≥60 + high_value_supplier → +5
+- Base score <50 → ignore ALL metadata (no bonus)
 
 EXAMPLES:
 
 Ex1: Perfect Match
-Tender: "Hospital beds" | Website: "MedEquip - hospital bed manufacturer"
-→ Score: 95 | Rationale: "Band: Perfect Match — Evidence: 'hospital beds' in catalog"
+Tender: "Hospital beds" | Website: "MedEquip - hospital bed manufacturer, ICU bed catalog"
+→ Score: 95 | Rationale: "Band: PERFECT — Evidence: 'hospital beds' + 'ICU bed catalog'"
 
-Ex2: NO MATCH - Lobbying (prevent false positive!)
-Tender: "Utility vehicles" | Website: "Natural Gas Vehicle Alliance - lobbying office"
+Ex2: NO MATCH - Lobbying (metadata ignored!)
+Tender: "Utility vehicles" | Website: "Natural Gas Vehicle Alliance - lobbying office for NGV adoption"
 Metadata: past_winner, $5.5M contracts
-→ Score: 5 | Rationale: "Band: No Match — Evidence: 'lobbying office', not supplier"
+→ Score: 5 | Rationale: "Band: NO MATCH — Evidence: 'lobbying office', not supplier"
 
-Ex3: NO MATCH - Association (ignore metadata!)
-Tender: "Ammunition" | Website: "Defense Contractors Assoc - advocacy group"
+Ex3: NO MATCH - Association (metadata ignored!)
+Tender: "Ammunition" | Website: "Defense Contractors Assoc - advocacy group for defense industry"
 Metadata: past_winner, $10M, 50 contracts
-→ Score: 8 | Rationale: "Band: No Match — Evidence: 'association', not supplier"
+→ Score: 8 | Rationale: "Band: NO MATCH — Evidence: 'association', not supplier"
+
+Ex4: WEAK - Vague language only
+Tender: "Software licenses" | Website: "TechCorp - we provide innovative solutions and consulting"
+Metadata: None
+→ Score: 20 | Rationale: "Band: WEAK — Evidence: No specific products, only 'solutions' (vague)"
 
 ---
 TENDER: {tender_requirements}

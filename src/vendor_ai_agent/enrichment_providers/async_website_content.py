@@ -20,6 +20,9 @@ SOCIAL_DOMAINS = {
     "mapquest.com",
     "yelp.com",
     "squarespace.com",
+    "finance.yahoo.com",
+    "yahoo.com",
+    "news.yahoo.com",
 }
 
 
@@ -29,13 +32,22 @@ class AsyncWebsiteContentProvider(BaseEnrichmentProvider):
         self,
         enable_cache: bool = True,
         enable_logging: bool = True,
+        *,
+        enable_playwright_fallback: bool = False,
+        playwright_max_contexts: int = 2,
+        playwright_wait_ms: int = 800,
     ):
         super().__init__(name="async_website_content")
-        self.scraper = AsyncWebsiteScraper(enable_cache=enable_cache)
+        self.scraper = AsyncWebsiteScraper(
+            enable_cache=enable_cache,
+            enable_playwright_fallback=enable_playwright_fallback,
+            playwright_max_contexts=playwright_max_contexts,
+            playwright_wait_ms=playwright_wait_ms,
+        )
         self.logger = logging.getLogger(__name__) if enable_logging else None
     
     def enrich_batch(self, vendors: List[VendorRecord]) -> List[VendorRecord]:
-        """Enrich multiple vendors in a single async batch."""
+        """Enrich multiple vendors in a single sync batch."""
         if not vendors:
             return []
         
@@ -67,6 +79,48 @@ class AsyncWebsiteContentProvider(BaseEnrichmentProvider):
             return vendors
         
         results = self.scraper.scrape_batch_sync(urls_to_scrape)
+        
+        for url, result in results.items():
+            for vendor in vendor_by_url.get(url, []):
+                self._apply_scrape_result(vendor, result)
+        
+        return vendors
+    
+    async def enrich_batch_async(self, vendors: List[VendorRecord]) -> List[VendorRecord]:
+        """Enrich multiple vendors in a single async batch."""
+        if not vendors:
+            return []
+        
+        urls_to_scrape = []
+        vendor_by_url: Dict[str, List[VendorRecord]] = {}
+        
+        for vendor in vendors:
+            if not vendor.website:
+                continue
+            
+            if "website_content" in vendor.filtering_metadata:
+                continue
+            
+            domain = self._extract_domain(vendor.website)
+            if domain and self._is_social_domain(domain):
+                vendor.filtering_metadata["scrape_status"] = "ignored_social"
+                vendor.filtering_metadata["scrape_error"] = "Social profile link"
+                vendor.filtering_metadata["social_profile_url"] = vendor.website
+                if self.logger:
+                    self.logger.info(f"Skipping {vendor.company_name}: social profile ({domain})")
+                continue
+            
+            urls_to_scrape.append(vendor.website)
+            if vendor.website not in vendor_by_url:
+                vendor_by_url[vendor.website] = []
+            vendor_by_url[vendor.website].append(vendor)
+        
+        if not urls_to_scrape:
+            return vendors
+        
+        if self.logger:
+            self.logger.info(f"Starting async website content scrape batch: {len(urls_to_scrape)} URLs")
+        results = await self.scraper.scrape_batch(urls_to_scrape)
         
         for url, result in results.items():
             for vendor in vendor_by_url.get(url, []):

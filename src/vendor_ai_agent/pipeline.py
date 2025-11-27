@@ -45,7 +45,7 @@ from .modules import (
 from .sources.sam_entity import SamEntitySource
 from .sources import CanadaContractsVendorSource, StaticDirectorySource, ApolloSearchSource, SerperVendorSource
 from .database.connection import get_session
-from .enrichment_providers import WebsiteContentProvider
+from .enrichment_providers import AsyncWebsiteContentProvider, WebsiteContentProvider
 
 @dataclass
 class PipelineContext:
@@ -146,14 +146,15 @@ class TenderVendorPipeline:
             logging.info("HybridWebsiteEnricher registered for website discovery")
         
         if cfg.capability_matching.enable_website_scraping:
-            from .modules.website_scraper import WebsiteScraper
-            scraper = WebsiteScraper(
-                timeout_seconds=cfg.capability_matching.scrape_timeout_seconds,
-                max_content_chars=cfg.capability_matching.max_content_chars
+            website_provider = AsyncWebsiteContentProvider(
+                enable_cache=True,
+                enable_logging=True,
+                enable_playwright_fallback=cfg.enrichment.enable_playwright_fallback,
+                playwright_max_contexts=cfg.enrichment.playwright_max_contexts,
+                playwright_wait_ms=cfg.enrichment.playwright_wait_ms,
             )
-            website_provider = WebsiteContentProvider(scraper=scraper)
             enrichment_providers.append(website_provider)
-            logging.info("WebsiteContentProvider registered for enrichment")
+            logging.info("AsyncWebsiteContentProvider registered for enrichment")
         
         if cfg.enrichment.enable_contact_scraping and cfg.serper_api_key:
             from .enrichment_providers import ContactScrapingProvider, SerperClient
@@ -163,7 +164,10 @@ class TenderVendorPipeline:
                 scraper_timeout=cfg.enrichment.scraper_timeout_seconds,
                 enable_llm_fallback=cfg.enrichment.enable_llm_fallback,
                 serper_client=serper_client,
-                enable_targeted_serper=cfg.enrichment.enable_targeted_serper_fallback
+                enable_targeted_serper=cfg.enrichment.enable_targeted_serper_fallback,
+                enable_playwright_fallback=cfg.enrichment.enable_playwright_fallback,
+                playwright_max_contexts=cfg.enrichment.playwright_max_contexts,
+                playwright_wait_ms=cfg.enrichment.playwright_wait_ms,
             )
             enrichment_providers.append(contact_provider)
             logging.info("ContactScrapingProvider registered with 3-level fallback")

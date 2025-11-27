@@ -118,7 +118,7 @@ class AsyncOpenAIProvider(LLMProvider):
         api_key: Optional[str] = None,
         default_model: str = "gpt-5-mini",
         use_flex_tier: bool = False,
-        concurrency_limit: int = 20
+        concurrency_limit: int = 10
     ):
         """Initialize async OpenAI provider.
         
@@ -126,7 +126,7 @@ class AsyncOpenAIProvider(LLMProvider):
             api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
             default_model: Default model to use (default: gpt-5-mini for cost optimization)
             use_flex_tier: Whether to use flex tier for 50% discount (adds latency)
-            concurrency_limit: Max parallel OpenAI requests (default: 20)
+            concurrency_limit: Max parallel OpenAI requests (default: 10)
         """
         try:
             from openai import AsyncOpenAI
@@ -142,7 +142,11 @@ class AsyncOpenAIProvider(LLMProvider):
                 "or pass api_key parameter."
             )
         
-        self.client = AsyncOpenAI(api_key=self.api_key)
+        self.client = AsyncOpenAI(
+            api_key=self.api_key,
+            timeout=60.0,
+            max_retries=3
+        )
         self.default_model = default_model
         self.use_flex_tier = use_flex_tier
         self.semaphore = asyncio.Semaphore(concurrency_limit)
@@ -174,47 +178,88 @@ class AsyncOpenAIProvider(LLMProvider):
         """
         target_model = model or self.default_model
         
-        try:
-            async with self.semaphore:
-                params = {
-                    "model": target_model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are a JSON extractor. Output ONLY raw JSON. Do not include markdown ```json``` tags. Do not write conversational text. Be concise."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
+        params = {
+            "model": target_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a JSON extractor. Output ONLY raw JSON. Do not include markdown ```json``` tags. Do not write conversational text. Be concise."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
                 }
-                
-                if "mini" in target_model.lower() or "nano" in target_model.lower():
-                    params["max_completion_tokens"] = 2500
-                else:
-                    params["temperature"] = 0.1
-                
-                if response_format == "json":
-                    params["response_format"] = {"type": "json_object"}
-                
-                if self.use_flex_tier:
-                    params["service_tier"] = "flex"
-                
-                response = await self.client.chat.completions.create(**params)
-                
-                content = response.choices[0].message.content
-                
-                usage = response.usage
-                self.logger.debug(
-                    "OpenAI async API call - Model: %s, Tokens: %d input / %d output",
-                    target_model,
-                    usage.prompt_tokens,
-                    usage.completion_tokens
-                )
-                
-                return content
+            ],
+        }
         
-        except Exception as exc:
-            self.logger.error("OpenAI async API call failed: %s", exc)
-            raise
+        if "mini" in target_model.lower() or "nano" in target_model.lower():
+            params["max_completion_tokens"] = 2500
+        else:
+            params["temperature"] = 0.1
+        
+        if response_format == "json":
+            params["response_format"] = {"type": "json_object"}
+        
+        if self.use_flex_tier:
+            params["service_tier"] = "flex"
+        
+        try:
+            from openai import APIConnectionError, APITimeoutError, RateLimitError
+        except ImportError:
+            APIConnectionError = Exception
+            APITimeoutError = Exception
+            RateLimitError = Exception
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with self.semaphore:
+                    response = await self.client.chat.completions.create(**params)
+                    
+                    content = response.choices[0].message.content
+                    
+                    usage = response.usage
+                    self.logger.debug(
+                        "OpenAI async API call - Model: %s, Tokens: %d input / %d output",
+                        target_model,
+                        usage.prompt_tokens,
+                        usage.completion_tokens
+                    )
+                    
+                    return content
+            
+            except (APIConnectionError, APITimeoutError) as exc:
+                wait_time = 2 ** attempt
+                if attempt < max_retries - 1:
+                    self.logger.warning(
+                        "OpenAI connection/timeout error (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1,
+                        max_retries,
+                        wait_time,
+                        exc
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    self.logger.error("OpenAI async API call failed after %d retries: %s", max_retries, exc)
+                    raise
+            
+            except RateLimitError as exc:
+                wait_time = 5 * (2 ** attempt)
+                if attempt < max_retries - 1:
+                    self.logger.warning(
+                        "OpenAI rate limit hit (attempt %d/%d), waiting %ds: %s",
+                        attempt + 1,
+                        max_retries,
+                        wait_time,
+                        exc
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    self.logger.error("OpenAI async API call failed after %d retries: %s", max_retries, exc)
+                    raise
+            
+            except Exception as exc:
+                self.logger.error("OpenAI async API call failed: %s", exc)
+                raise
+        
+        raise Exception("OpenAI async API call failed after all retries")

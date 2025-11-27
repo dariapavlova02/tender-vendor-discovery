@@ -100,6 +100,12 @@ class VendorEnricher(VendorEnricherContract):
         batch_num = 0
         while True:
             batch_num += 1
+
+            if self.max_enrichment_batches and batch_num > self.max_enrichment_batches:
+                self.logger.info(
+                    f"Reached max_enrichment_batches={self.max_enrichment_batches}, stopping"
+                )
+                break
             
             if len(all_relevant_results) >= self.target_relevant_vendors:
                 self.logger.info(
@@ -135,13 +141,17 @@ class VendorEnricher(VendorEnricherContract):
                 f"total relevant so far: {len(all_relevant_results)}"
             )
             
-            if self.enable_batch_quality_gates and batch_result.success_rate < self.min_batch_success_rate:
-                self.logger.warning(
-                    f"Low success rate in batch {batch_num}: {batch_result.success_rate:.1%}, "
-                    f"but continuing because target not reached ({len(all_relevant_results)}/{self.target_relevant_vendors})"
-                )
-            
-            current_position = batch_end
+            should_continue, new_position = self._check_quality_gate(
+                batch_result,
+                current_position,
+                batch_num,
+                vendors,
+            )
+
+            if not should_continue:
+                break
+
+            current_position = new_position if new_position is not None else batch_end
         
         self.logger.info(
             f"Batch enrichment complete: enriched {total_enriched} vendors, "
@@ -156,83 +166,112 @@ class VendorEnricher(VendorEnricherContract):
         vendors: List[VendorRecord],
         scoring_fn_async,
     ) -> tuple[List[VendorRecord], List[VendorMatchResult], List[VendorMatchResult]]:
-        """
-        Async version with pipeline pattern: enrich batch N+1 while scoring batch N.
-        
-        Returns:
-            Tuple of (all_enriched_vendors, all_relevant_matches, all_scored_matches)
-        """
+        """Async version with pipeline pattern: enrich batch N+1 while scoring batch N."""
         if not vendors:
             return [], [], []
-        
+
         if not self.enable_batch_quality_gates:
             self.logger.info("Batch quality gates disabled - enriching all vendors async")
             enriched = await self._enrich_all_parallel_async(vendors)
             all_scored = await scoring_fn_async(profile, enriched)
             relevant = [
-                r for r in all_scored 
+                r for r in all_scored
                 if r.capability_match_score >= self.relevance_score_threshold
             ]
             return enriched, relevant, all_scored
-        
+
         self.logger.info(
             f"Starting async batch enrichment with pipeline: {len(vendors)} candidates, "
             f"targeting {self.target_relevant_vendors} relevant vendors"
         )
-        
+
         all_enriched: List[VendorRecord] = []
         all_scored_results: List[VendorMatchResult] = []
         all_relevant_results: List[VendorMatchResult] = []
         total_enriched = 0
         current_position = 0
-        
-        batch_num = 0
-        next_batch_task = None
-        
-        while True:
-            batch_num += 1
-            
+        batches_processed = 0
+        prefetched_batch: Optional[dict] = None
+
+        async def _cancel_task(task: asyncio.Task) -> None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.debug(f"Prefetch task raised after cancel: {exc}")
+
+        while current_position < len(vendors):
             if len(all_relevant_results) >= self.target_relevant_vendors:
                 self.logger.info(
                     f"✓ Target reached: {len(all_relevant_results)} relevant vendors found"
                 )
                 break
-            
-            if current_position >= len(vendors):
-                self.logger.info(f"No more vendors to process (exhausted {len(vendors)} candidates)")
+
+            if self.max_enrichment_batches and batches_processed >= self.max_enrichment_batches:
+                self.logger.info(
+                    f"Reached max_enrichment_batches={self.max_enrichment_batches}, stopping"
+                )
+                if prefetched_batch:
+                    await _cancel_task(prefetched_batch["task"])
                 break
-            
-            batch_end = min(current_position + self.batch_size, len(vendors))
-            batch = vendors[current_position:batch_end]
-            
+
+            batch_num = batches_processed + 1
+
+            if current_position >= len(vendors):
+                self.logger.info(
+                    f"No more vendors to process (exhausted {len(vendors)} candidates)"
+                )
+                if prefetched_batch:
+                    await _cancel_task(prefetched_batch["task"])
+                break
+
+            if prefetched_batch and prefetched_batch["start"] == current_position:
+                batch = prefetched_batch["vendors"]
+                batch_end = prefetched_batch["end"]
+                enrich_task = prefetched_batch["task"]
+                prefetched_batch = None
+            else:
+                batch_end = min(current_position + self.batch_size, len(vendors))
+                batch = vendors[current_position:batch_end]
+                enrich_task = asyncio.create_task(
+                    self._enrich_all_parallel_async(batch)
+                )
+
             self.logger.info(
-                f"Batch {batch_num}: "
-                f"enriching vendors {current_position+1}-{batch_end} ({len(batch)} vendors)"
+                f"Batch {batch_num}: enriching vendors {current_position+1}-{batch_end} "
+                f"({len(batch)} vendors)"
             )
-            
-            current_enriched_batch = await self._enrich_all_parallel_async(batch)
-            
+
+            current_enriched_batch = await enrich_task
+
+            scheduled_prefetch = None
+            tentative_position = batch_end
+            if tentative_position < len(vendors):
+                tentative_end = min(tentative_position + self.batch_size, len(vendors))
+                next_batch = vendors[tentative_position:tentative_end]
+                self.logger.debug(
+                    f"Starting enrichment of next batch ({tentative_position+1}-{tentative_end}) "
+                    f"in parallel with scoring"
+                )
+                scheduled_prefetch = {
+                    "start": tentative_position,
+                    "end": tentative_end,
+                    "vendors": next_batch,
+                    "task": asyncio.create_task(
+                        self._enrich_all_parallel_async(next_batch)
+                    ),
+                }
+
             content_ready, skipped_for_content = self._split_content_ready(current_enriched_batch)
-            
+
             if skipped_for_content:
                 self.logger.info(
                     "Skipping %s vendors with no website content before scoring",
                     len(skipped_for_content),
                 )
-            
-            next_position = batch_end
-            next_batch_end = min(next_position + self.batch_size, len(vendors))
-            
-            if next_position < len(vendors):
-                next_batch = vendors[next_position:next_batch_end]
-                self.logger.debug(
-                    f"Starting enrichment of next batch ({next_position+1}-{next_batch_end}) "
-                    f"in parallel with scoring"
-                )
-                next_batch_task = asyncio.create_task(
-                    self._enrich_all_parallel_async(next_batch)
-                )
-            
+
             if not content_ready:
                 self.logger.warning(
                     "Batch %s has no vendors with website content; skipping scoring",
@@ -241,45 +280,65 @@ class VendorEnricher(VendorEnricherContract):
                 scored_batch = []
             else:
                 scored_batch = await scoring_fn_async(profile, content_ready)
-            
+
             all_enriched.extend(current_enriched_batch)
             all_scored_results.extend(scored_batch)
             relevant = [
-                r for r in scored_batch 
+                r for r in scored_batch
                 if r.capability_match_score >= self.relevance_score_threshold
             ]
             all_relevant_results.extend(relevant)
             total_enriched += len(current_enriched_batch)
-            
+
             success_base = len(content_ready)
             success_rate = len(relevant) / success_base if success_base else 0.0
-            
+
             self.logger.info(
                 f"Batch {batch_num} complete: {len(relevant)}/{len(batch)} relevant "
                 f"(success rate: {success_rate:.1%}), "
                 f"total relevant so far: {len(all_relevant_results)}"
             )
-            
-            if self.enable_batch_quality_gates and success_rate < self.min_batch_success_rate:
-                self.logger.warning(
-                    f"Low success rate in batch {batch_num}: {success_rate:.1%}, "
-                    f"but continuing because target not reached ({len(all_relevant_results)}/{self.target_relevant_vendors})"
-                )
-            
+
+            batch_result = BatchEnrichmentResult(
+                enriched_vendors=current_enriched_batch,
+                scored_results=scored_batch,
+                relevant_count=len(relevant),
+                success_rate=success_rate,
+                batch_number=batch_num,
+                total_enriched=total_enriched,
+            )
+
+            should_continue, new_position = self._check_quality_gate(
+                batch_result,
+                current_position,
+                batch_num,
+                vendors,
+            )
+
+            if not should_continue:
+                if scheduled_prefetch:
+                    await _cancel_task(scheduled_prefetch["task"])
+                break
+
+            next_position = new_position if new_position is not None else batch_end
+
+            if scheduled_prefetch:
+                if next_position == scheduled_prefetch["start"]:
+                    prefetched_batch = scheduled_prefetch
+                else:
+                    await _cancel_task(scheduled_prefetch["task"])
+
             current_position = next_position
-        
-        if next_batch_task:
-            next_batch_task.cancel()
-            try:
-                await next_batch_task
-            except asyncio.CancelledError:
-                pass
-        
+            batches_processed += 1
+
+        if prefetched_batch:
+            await _cancel_task(prefetched_batch["task"])
+
         self.logger.info(
             f"Async batch enrichment complete: enriched {total_enriched} vendors, "
             f"found {len(all_relevant_results)} relevant (score >= {self.relevance_score_threshold})"
         )
-        
+
         return all_enriched, all_relevant_results, all_scored_results
     
     def _process_batch(
@@ -429,22 +488,58 @@ class VendorEnricher(VendorEnricherContract):
         if not vendors:
             return []
         
-        self.logger.debug(f"Enriching {len(vendors)} vendors with async parallel processing")
+        self.logger.debug(f"Enriching {len(vendors)} vendors with two-phase async processing")
         
-        async def enrich_vendor_async(vendor: VendorRecord) -> VendorRecord:
-            try:
-                for provider in self.providers:
-                    if hasattr(provider, 'enrich_async'):
-                        vendor = await provider.enrich_async(vendor)  # type: ignore[attr-defined]
-                    else:
-                        vendor = provider.enrich(vendor)
-                return vendor
-            except Exception as e:
-                self.logger.error(f"Error enriching {vendor.company_name}: {e}")
-                return vendor
+        batch_providers: List[EnrichmentProvider] = []
+        per_vendor_providers: List[EnrichmentProvider] = []
         
-        enriched = await asyncio.gather(*[enrich_vendor_async(v) for v in vendors])
-        return list(enriched)
+        for provider in self.providers:
+            if (hasattr(provider, 'supports_batch_enrichment') and 
+                callable(getattr(provider, 'supports_batch_enrichment', None))):
+                try:
+                    supports_batch_fn = getattr(provider, 'supports_batch_enrichment')
+                    if supports_batch_fn():
+                        batch_providers.append(provider)
+                        continue
+                except Exception:
+                    pass
+            per_vendor_providers.append(provider)
+        
+        if batch_providers:
+            self.logger.debug(f"Phase 1: Running {len(batch_providers)} batch providers")
+            for provider in batch_providers:
+                try:
+                    if hasattr(provider, 'enrich_batch_async'):
+                        enrich_batch_fn = getattr(provider, 'enrich_batch_async')
+                        vendors = await enrich_batch_fn(vendors)
+                except Exception as e:
+                    self.logger.error(f"Batch provider {provider.name} failed: {e}")
+        
+        if per_vendor_providers:
+            self.logger.debug(f"Phase 2: Running {len(per_vendor_providers)} per-vendor providers in parallel")
+
+            concurrency = max(1, self.max_workers)
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def enrich_vendor_async(vendor: VendorRecord) -> VendorRecord:
+                async with semaphore:
+                    try:
+                        for provider in per_vendor_providers:
+                            if hasattr(provider, 'enrich_async'):
+                                enrich_fn = getattr(provider, 'enrich_async')
+                                vendor = await enrich_fn(vendor)
+                            else:
+                                vendor = provider.enrich(vendor)
+                        return vendor
+                    except Exception as e:
+                        self.logger.error(f"Error enriching {vendor.company_name}: {e}")
+                        return vendor
+
+            vendors = list(
+                await asyncio.gather(*[enrich_vendor_async(v) for v in vendors])
+            )
+
+        return vendors
 
     def _split_content_ready(
         self, vendors: List[VendorRecord]

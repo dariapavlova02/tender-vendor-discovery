@@ -17,6 +17,25 @@ import httpx
 from bs4 import BeautifulSoup
 
 
+class DomainRateLimiter:
+    def __init__(self, min_delay_seconds: float = 2.0):
+        self.min_delay = min_delay_seconds
+        self._last_request: Dict[str, float] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+    
+    async def wait_if_needed(self, domain: str):
+        if domain not in self._locks:
+            self._locks[domain] = asyncio.Lock()
+        
+        async with self._locks[domain]:
+            last_time = self._last_request.get(domain, 0)
+            elapsed = time.time() - last_time
+            if elapsed < self.min_delay:
+                wait_time = self.min_delay - elapsed
+                await asyncio.sleep(wait_time)
+            self._last_request[domain] = time.time()
+
+
 @dataclass
 class CachedWebsiteContent:
     domain: str
@@ -116,19 +135,30 @@ class AsyncWebsiteScraper:
     TIMEOUT_TIER2 = 10.0
     TIMEOUT_TIER3 = 12.0
     TIMEOUT_CONTACT = 10.0
-    DELAY_BETWEEN_REQUESTS = 0.15
+    DELAY_BETWEEN_REQUESTS = 2.0
     
     EARLY_STOP_TIER1 = 1000
     EARLY_STOP_TIER2 = 1500
+
+    FORBIDDEN_RETRY_ATTEMPTS = 3
+    FORBIDDEN_RETRY_BACKOFF_SECONDS = 1.5
     
     USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_7_10) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; SM-G996B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
     ]
     
     BROWSER_HEADERS = {
@@ -149,11 +179,16 @@ class AsyncWebsiteScraper:
         timeout_seconds: float = 3.0,
         max_content_chars: int = 3000,
         min_content_chars: int = 500,
-        max_concurrent_global: int = 50,
-        max_concurrent_per_domain: int = 2,
+        max_concurrent_global: int = 15,
+        max_concurrent_per_domain: int = 1,
         enable_cache: bool = True,
         cache_dir: str = "outputs/cache/websites",
         cache_ttl_hours: int = 24,
+        max_batch_concurrency: int = 8,
+        *,
+        enable_playwright_fallback: bool = False,
+        playwright_max_contexts: int = 2,
+        playwright_wait_ms: int = 800,
     ):
         self.timeout = timeout_seconds
         self.max_chars = max_content_chars
@@ -170,13 +205,158 @@ class AsyncWebsiteScraper:
         self.cache: Optional[WebsiteCache] = None
         if enable_cache:
             self.cache = WebsiteCache(cache_dir=cache_dir, ttl_hours=cache_ttl_hours)
+        self.max_batch_concurrency = max(1, max_batch_concurrency)
+        self._domain_headers: Dict[str, Dict[str, str]] = {}
+        self._rate_limiter = DomainRateLimiter(min_delay_seconds=2.0)
+
+        self.enable_playwright_fallback = enable_playwright_fallback
+        self.playwright_max_contexts = max(1, playwright_max_contexts)
+        self.playwright_wait_ms = max(0, playwright_wait_ms)
+        self._playwright_instance = None
+        self._playwright_lock: Optional[asyncio.Lock] = None
+        self._playwright_contexts: Dict[asyncio.AbstractEventLoop, dict] = {}
     
     def _get_random_headers(self) -> Dict[str, str]:
         """Get randomized browser headers."""
         import random
         headers = self.BROWSER_HEADERS.copy()
         headers["User-Agent"] = random.choice(self.USER_AGENTS)
+        
+        referers = [
+            "https://www.google.com/",
+            "https://www.bing.com/",
+            "https://duckduckgo.com/",
+        ]
+        headers["Referer"] = random.choice(referers)
+        
+        languages = [
+            "en-US,en;q=0.9",
+            "en-GB,en;q=0.9",
+            "en-CA,en;q=0.9",
+            "en-US,en;q=0.8",
+        ]
+        headers["Accept-Language"] = random.choice(languages)
+        
         return headers
+
+    def _get_domain_headers(self, domain: str) -> Dict[str, str]:
+        """Get persistent headers for a domain to reuse cookies + UA."""
+        headers = self._domain_headers.get(domain)
+        if headers is None:
+            headers = self._get_random_headers()
+            self._domain_headers[domain] = headers
+        return headers.copy()
+
+    def _extract_text_from_html(
+        self,
+        html: str,
+        *,
+        strip_navigation: bool,
+        include_mailto: bool,
+        min_length: int,
+    ) -> Optional[str]:
+        soup = BeautifulSoup(html, "html.parser")
+
+        mailto_emails: List[str] = []
+        if include_mailto:
+            for anchor in soup.find_all("a", href=True):
+                href = str(anchor["href"]).strip()
+                if href.lower().startswith("mailto:"):
+                    email = href[7:].split("?")[0]
+                    if email:
+                        mailto_emails.append(email)
+            for elem in soup.find_all(attrs={"data-email": True}):
+                email_val = elem.get("data-email")
+                if email_val and isinstance(email_val, str):
+                    mailto_emails.append(email_val.strip())
+
+        tags_to_strip = ["script", "style", "iframe"]
+        if strip_navigation:
+            tags_to_strip.extend(["nav", "footer", "header", "aside"])
+
+        for tag in soup(tags_to_strip):
+            tag.decompose()
+
+        text = soup.get_text(separator=" ", strip=True)
+        if include_mailto and mailto_emails:
+            text = f"{text} {' '.join(mailto_emails)}"
+        text = " ".join(text.split())
+        return text if len(text) > min_length else None
+
+    async def _ensure_playwright_browser(self) -> dict:
+        loop = asyncio.get_running_loop()
+        context = self._playwright_contexts.get(loop)
+        if context is not None:
+            return context
+        if self._playwright_lock is None:
+            self._playwright_lock = asyncio.Lock()
+        async with self._playwright_lock:
+            context = self._playwright_contexts.get(loop)
+            if context is not None:
+                return context
+            try:
+                from playwright.async_api import async_playwright
+            except ImportError as exc:
+                self.logger.error("Playwright dependency missing: %s", exc)
+                raise
+            if self._playwright_instance is None:
+                self._playwright_instance = await async_playwright().start()
+            browser = await self._playwright_instance.chromium.launch(headless=True)
+            semaphore = asyncio.Semaphore(self.playwright_max_contexts)
+            context = {"browser": browser, "semaphore": semaphore}
+            self._playwright_contexts[loop] = context
+            return context
+
+    async def _fetch_with_playwright(
+        self,
+        url: str,
+        *,
+        timeout: float,
+        strip_navigation: bool,
+        include_mailto: bool,
+        min_length: int,
+        domain: str,
+    ) -> Optional[str]:
+        if not self.enable_playwright_fallback:
+            return None
+        try:
+            context_handles = await self._ensure_playwright_browser()
+        except Exception as exc:
+            self.logger.error("Disabling Playwright fallback: %s", exc)
+            self.enable_playwright_fallback = False
+            return None
+
+        headers = self._get_domain_headers(domain)
+        browser = context_handles["browser"]
+        semaphore = context_handles["semaphore"]
+
+        async with semaphore:
+            context = await browser.new_context(
+                user_agent=headers.get("User-Agent"),
+                locale="en-US",
+            )
+            page = await context.new_page()
+            try:
+                await page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=int(max(timeout, self.timeout) * 1000),
+                )
+                if self.playwright_wait_ms:
+                    await page.wait_for_timeout(self.playwright_wait_ms)
+                html = await page.content()
+                return self._extract_text_from_html(
+                    html,
+                    strip_navigation=strip_navigation,
+                    include_mailto=include_mailto,
+                    min_length=min_length,
+                )
+            except Exception as exc:
+                self.logger.debug(f"Playwright fetch failed for {url}: {exc}")
+                return None
+            finally:
+                await page.close()
+                await context.close()
     
     async def _ensure_semaphores(self) -> asyncio.Semaphore:
         """Lazy initialization of semaphores in the current event loop."""
@@ -225,125 +405,158 @@ class AsyncWebsiteScraper:
         except Exception:
             return False
     
-    async def _fetch_page(self, client: httpx.AsyncClient, url: str, timeout: float, retry_on_403: bool = True) -> Optional[str]:
+    async def _fetch_page(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        timeout: float,
+        retry_on_403: bool = True,
+        *,
+        include_status: bool = False,
+        domain: Optional[str] = None,
+    ):
         """Fetch and extract text content from a single page."""
-        try:
-            response = await client.get(
+        status_code: Optional[int] = None
+
+        def _result(value: Optional[str]):
+            if include_status:
+                return value, status_code
+            return value
+
+        attempts = self.FORBIDDEN_RETRY_ATTEMPTS if retry_on_403 else 0
+        target_domain = domain or self._get_domain(self._normalize_url(url))
+        
+        await self._rate_limiter.wait_if_needed(target_domain)
+
+        for attempt in range(attempts + 1):
+            try:
+                response = await client.get(
+                    url,
+                    timeout=timeout,
+                    follow_redirects=True,
+                    headers=self._get_domain_headers(target_domain),
+                )
+                response.raise_for_status()
+                status_code = response.status_code
+
+                text = self._extract_text_from_html(
+                    response.text,
+                    strip_navigation=True,
+                    include_mailto=False,
+                    min_length=100,
+                )
+
+                return _result(text)
+
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                should_retry = (
+                    status_code == 403
+                    and retry_on_403
+                    and attempt < attempts
+                )
+                if should_retry:
+                    delay = self.FORBIDDEN_RETRY_BACKOFF_SECONDS * (2 ** attempt)
+                    self.logger.debug(
+                        f"403 Forbidden on {url}, retry {attempt + 1}/{attempts} after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                self.logger.debug(f"Failed to fetch {url}: {status_code}")
+                break
+            except (httpx.TimeoutException, httpx.RequestError) as e:
+                self.logger.debug(f"Failed to fetch {url}: {type(e).__name__}")
+                break
+            except Exception as e:
+                self.logger.debug(f"Unexpected error fetching {url}: {e}")
+                break
+
+        if self.enable_playwright_fallback:
+            fallback = await self._fetch_with_playwright(
                 url,
                 timeout=timeout,
-                follow_redirects=True,
+                strip_navigation=True,
+                include_mailto=False,
+                min_length=100,
+                domain=target_domain,
             )
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-                tag.decompose()
-            
-            text = soup.get_text(separator=" ", strip=True)
-            text = " ".join(text.split())
-            
-            return text if len(text) > 100 else None
-            
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 403 and retry_on_403:
-                self.logger.debug(f"403 Forbidden on {url}, retrying with different User-Agent")
-                try:
-                    new_headers = self._get_random_headers()
-                    response = await client.get(
-                        url,
-                        timeout=timeout,
-                        follow_redirects=True,
-                        headers=new_headers
-                    )
-                    response.raise_for_status()
-                    
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-                        tag.decompose()
-                    
-                    text = soup.get_text(separator=" ", strip=True)
-                    text = " ".join(text.split())
-                    
-                    return text if len(text) > 100 else None
-                except Exception:
-                    self.logger.debug(f"Retry failed for {url}")
-                    return None
-            else:
-                self.logger.debug(f"Failed to fetch {url}: {e.response.status_code}")
-                return None
-        except (httpx.TimeoutException, httpx.RequestError) as e:
-            self.logger.debug(f"Failed to fetch {url}: {type(e).__name__}")
-            return None
-        except Exception as e:
-            self.logger.debug(f"Unexpected error fetching {url}: {e}")
-            return None
+            if fallback:
+                status_code = 200
+                return _result(fallback)
+
+        return _result(None)
     
     async def _fetch_paths_parallel(
         self,
         client: httpx.AsyncClient,
         base_url: str,
-        domain: str
-    ) -> tuple[List[str], List[str]]:
+        domain: str,
+    ) -> tuple[List[str], List[str], bool]:
         """Fetch multiple paths with 3-tier strategy and progressive timeouts."""
-        content_parts = []
-        successful_urls = []
-        
+        content_parts: List[str] = []
+        successful_urls: List[str] = []
+        blocked = False
+
         domain_sem = await self._get_domain_semaphore(domain)
-        
+
+        async def _handle_path(target_url: str, timeout: float) -> bool:
+            nonlocal blocked
+            content, status = await self._fetch_page(
+                client,
+                target_url,
+                timeout,
+                include_status=True,
+                domain=domain,
+            )
+
+            if status == 403:
+                blocked = True
+                self.logger.warning(f"403 Forbidden on {target_url}, throttling domain")
+                return True
+
+            if content:
+                content_parts.append(content[:self.max_chars])
+                successful_urls.append(target_url)
+                self.logger.debug(f"  ✓ {target_url[len(base_url):] or '/'} ({len(content)} chars)")
+
+            return len("".join(content_parts)) >= self.max_chars
+
         for path in self.PRIORITY_PATHS["tier1"]:
             target_url = urljoin(base_url, path)
-            
+
             async with domain_sem:
-                content = await self._fetch_page(client, target_url, self.TIMEOUT_TIER1)
-                
-                if content:
-                    content_parts.append(content[:self.max_chars])
-                    successful_urls.append(target_url)
-                    self.logger.debug(f"  ✓ tier1 {path} ({len(content)} chars)")
-                    
-                    if len("".join(content_parts)) >= self.max_chars:
-                        break
-                
-                await asyncio.sleep(self.DELAY_BETWEEN_REQUESTS)
-        
-        if len("".join(content_parts)) < self.EARLY_STOP_TIER1:
-            self.logger.debug(f"Tier1 insufficient ({len(''.join(content_parts))} < {self.EARLY_STOP_TIER1}), proceeding to tier2")
+                should_stop = await _handle_path(target_url, self.TIMEOUT_TIER1)
+            if blocked or should_stop:
+                break
+            await asyncio.sleep(self.DELAY_BETWEEN_REQUESTS)
+
+        if not blocked and len("".join(content_parts)) < self.EARLY_STOP_TIER1:
+            self.logger.debug(
+                f"Tier1 insufficient ({len(''.join(content_parts))} < {self.EARLY_STOP_TIER1}), proceeding to tier2"
+            )
             for path in self.PRIORITY_PATHS["tier2"]:
                 target_url = urljoin(base_url, path)
-                
+
                 async with domain_sem:
-                    content = await self._fetch_page(client, target_url, self.TIMEOUT_TIER2)
-                    
-                    if content:
-                        content_parts.append(content[:self.max_chars])
-                        successful_urls.append(target_url)
-                        self.logger.debug(f"  ✓ tier2 {path} ({len(content)} chars)")
-                        
-                        if len("".join(content_parts)) >= self.max_chars:
-                            break
-                    
-                    await asyncio.sleep(self.DELAY_BETWEEN_REQUESTS)
-        
-        if len("".join(content_parts)) < self.EARLY_STOP_TIER2:
-            self.logger.debug(f"Tier2 insufficient ({len(''.join(content_parts))} < {self.EARLY_STOP_TIER2}), proceeding to tier3")
+                    should_stop = await _handle_path(target_url, self.TIMEOUT_TIER2)
+                if blocked or should_stop:
+                    break
+                await asyncio.sleep(self.DELAY_BETWEEN_REQUESTS)
+
+        if not blocked and len("".join(content_parts)) < self.EARLY_STOP_TIER2:
+            self.logger.debug(
+                f"Tier2 insufficient ({len(''.join(content_parts))} < {self.EARLY_STOP_TIER2}), proceeding to tier3"
+            )
             for path in self.PRIORITY_PATHS["tier3"]:
                 target_url = urljoin(base_url, path)
-                
+
                 async with domain_sem:
-                    content = await self._fetch_page(client, target_url, self.TIMEOUT_TIER3)
-                    
-                    if content:
-                        content_parts.append(content[:self.max_chars])
-                        successful_urls.append(target_url)
-                        self.logger.debug(f"  ✓ tier3 {path} ({len(content)} chars)")
-                        
-                        if len("".join(content_parts)) >= self.max_chars:
-                            break
-                    
-                    await asyncio.sleep(self.DELAY_BETWEEN_REQUESTS)
-        
-        return content_parts, successful_urls
+                    should_stop = await _handle_path(target_url, self.TIMEOUT_TIER3)
+                if blocked or should_stop:
+                    break
+                await asyncio.sleep(self.DELAY_BETWEEN_REQUESTS)
+
+        return content_parts, successful_urls, blocked
     
     async def _scrape_domain(self, client: httpx.AsyncClient, website_url: str) -> ScrapedContent:
         """Scrape a single domain with caching support."""
@@ -380,14 +593,19 @@ class AsyncWebsiteScraper:
             global_sem = await self._ensure_semaphores()
             
             async with global_sem:
-                content_parts, successful_urls = await self._fetch_paths_parallel(
+                content_parts, successful_urls, blocked = await self._fetch_paths_parallel(
                     client, base_url, domain
                 )
-            
+
             full_content = " ".join(content_parts)[:self.max_chars]
             duration_ms = int((time.time() - start_time) * 1000)
-            
-            if not full_content or len(full_content) < 100:
+
+            error_message = None
+            if blocked and not full_content:
+                status = "blocked"
+                error_message = "403 Forbidden"
+                self.logger.warning(f"Access blocked for {domain}")
+            elif not full_content or len(full_content) < 100:
                 status = "no_content"
                 self.logger.warning(f"No content for {domain}")
             else:
@@ -411,6 +629,7 @@ class AsyncWebsiteScraper:
                 status=status,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 fetch_duration_ms=duration_ms,
+                error_message=error_message,
             )
             
         except Exception as e:
@@ -434,11 +653,16 @@ class AsyncWebsiteScraper:
         self.logger.info(f"Starting async scrape: {len(unique_urls)} domains")
         
         async with httpx.AsyncClient(
-            headers=self._get_random_headers(),
             verify=False,
             http2=True,
         ) as client:
-            tasks = [self._scrape_domain(client, url) for url in unique_urls]
+            semaphore = asyncio.Semaphore(self.max_batch_concurrency)
+
+            async def run_with_limit(target_url: str):
+                async with semaphore:
+                    return await self._scrape_domain(client, target_url)
+
+            tasks = [run_with_limit(url) for url in unique_urls]
             results = await asyncio.gather(*tasks, return_exceptions=True)
         
         results_dict = {}
@@ -470,92 +694,70 @@ class AsyncWebsiteScraper:
         """Synchronous wrapper for scrape_batch."""
         return asyncio.run(self.scrape_batch(website_urls))
     
-    async def _fetch_page_with_contacts(self, client: httpx.AsyncClient, url: str, timeout: float, retry_on_403: bool = True) -> Optional[str]:
+    async def _fetch_page_with_contacts(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        timeout: float,
+        retry_on_403: bool = True,
+        *,
+        domain: Optional[str] = None,
+    ) -> Optional[str]:
         """Fetch page preserving contact information (no removal of nav/footer/header)."""
-        try:
-            response = await client.get(
+        attempts = self.FORBIDDEN_RETRY_ATTEMPTS if retry_on_403 else 0
+        target_domain = domain or self._get_domain(self._normalize_url(url))
+
+        for attempt in range(attempts + 1):
+            try:
+                response = await client.get(
+                    url,
+                    timeout=timeout,
+                    follow_redirects=True,
+                    headers=self._get_domain_headers(target_domain),
+                )
+                response.raise_for_status()
+                
+                text = self._extract_text_from_html(
+                    response.text,
+                    strip_navigation=False,
+                    include_mailto=True,
+                    min_length=50,
+                )
+                return text
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                should_retry = (
+                    status_code == 403
+                    and retry_on_403
+                    and attempt < attempts
+                )
+                if should_retry:
+                    delay = self.FORBIDDEN_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                    self.logger.debug(
+                        f"403 Forbidden on contact page {url}, retry {attempt + 1}/{attempts} after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                self.logger.debug(f"Failed to fetch contact page {url}: {status_code}")
+                break
+            except (httpx.TimeoutException, httpx.RequestError) as e:
+                self.logger.debug(f"Failed to fetch contact page {url}: {type(e).__name__}")
+                break
+            except Exception as e:
+                self.logger.debug(f"Unexpected error fetching contact page {url}: {e}")
+                break
+        
+        if self.enable_playwright_fallback:
+            return await self._fetch_with_playwright(
                 url,
                 timeout=timeout,
-                follow_redirects=True,
+                strip_navigation=False,
+                include_mailto=True,
+                min_length=50,
+                domain=target_domain,
             )
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            mailto_emails = []
-            for anchor in soup.find_all("a", href=True):
-                href = str(anchor["href"]).strip()
-                if href.lower().startswith("mailto:"):
-                    email = href[7:].split("?")[0]
-                    if email:
-                        mailto_emails.append(email)
-            
-            for elem in soup.find_all(attrs={"data-email": True}):
-                email_val = elem.get("data-email")
-                if email_val and isinstance(email_val, str):
-                    mailto_emails.append(email_val.strip())
-            
-            for tag in soup(["script", "style", "iframe"]):
-                tag.decompose()
-            
-            text = soup.get_text(separator=" ", strip=True)
-            if mailto_emails:
-                text = f"{text} {' '.join(mailto_emails)}"
-            
-            text = " ".join(text.split())
-            
-            return text if len(text) > 50 else None
-            
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 403 and retry_on_403:
-                self.logger.debug(f"403 Forbidden on contact page {url}, retrying with different User-Agent")
-                try:
-                    new_headers = self._get_random_headers()
-                    response = await client.get(
-                        url,
-                        timeout=timeout,
-                        follow_redirects=True,
-                        headers=new_headers
-                    )
-                    response.raise_for_status()
-                    
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    
-                    mailto_emails = []
-                    for anchor in soup.find_all("a", href=True):
-                        href = str(anchor["href"]).strip()
-                        if href.lower().startswith("mailto:"):
-                            email = href[7:].split("?")[0]
-                            if email:
-                                mailto_emails.append(email)
-                    
-                    for elem in soup.find_all(attrs={"data-email": True}):
-                        email_val = elem.get("data-email")
-                        if email_val and isinstance(email_val, str):
-                            mailto_emails.append(email_val.strip())
-                    
-                    for tag in soup(["script", "style", "iframe"]):
-                        tag.decompose()
-                    
-                    text = soup.get_text(separator=" ", strip=True)
-                    if mailto_emails:
-                        text = f"{text} {' '.join(mailto_emails)}"
-                    
-                    text = " ".join(text.split())
-                    
-                    return text if len(text) > 50 else None
-                except Exception:
-                    self.logger.debug(f"Retry failed for contact page {url}")
-                    return None
-            else:
-                self.logger.debug(f"Failed to fetch contact page {url}: {e.response.status_code}")
-                return None
-        except (httpx.TimeoutException, httpx.RequestError) as e:
-            self.logger.debug(f"Failed to fetch contact page {url}: {type(e).__name__}")
-            return None
-        except Exception as e:
-            self.logger.debug(f"Unexpected error fetching contact page {url}: {e}")
-            return None
+        
+        return None
     
     async def _scrape_contacts_domain(self, client: httpx.AsyncClient, website_url: str) -> ContactScrapedContent:
         """Scrape contact pages for a single domain."""
@@ -602,7 +804,12 @@ class AsyncWebsiteScraper:
                     
                     domain_sem = await self._get_domain_semaphore(domain)
                     async with domain_sem:
-                        content = await self._fetch_page_with_contacts(client, target_url, self.TIMEOUT_CONTACT)
+                        content = await self._fetch_page_with_contacts(
+                            client,
+                            target_url,
+                            self.TIMEOUT_CONTACT,
+                            domain=domain,
+                        )
                         
                         if content:
                             contact_parts.append(content)
@@ -615,7 +822,12 @@ class AsyncWebsiteScraper:
                     self.logger.debug(f"No contact pages, trying homepage for {domain}")
                     domain_sem = await self._get_domain_semaphore(domain)
                     async with domain_sem:
-                        homepage_content = await self._fetch_page_with_contacts(client, base_url, self.TIMEOUT_CONTACT)
+                        homepage_content = await self._fetch_page_with_contacts(
+                            client,
+                            base_url,
+                            self.TIMEOUT_CONTACT,
+                            domain=domain,
+                        )
                         if homepage_content:
                             contact_parts.append(homepage_content)
                             successful_urls.append(base_url)
@@ -660,11 +872,16 @@ class AsyncWebsiteScraper:
         self.logger.info(f"Starting async contact scrape: {len(unique_urls)} domains")
         
         async with httpx.AsyncClient(
-            headers=self._get_random_headers(),
             verify=False,
             http2=True,
         ) as client:
-            tasks = [self._scrape_contacts_domain(client, url) for url in unique_urls]
+            semaphore = asyncio.Semaphore(self.max_batch_concurrency)
+
+            async def run_with_limit(target_url: str):
+                async with semaphore:
+                    return await self._scrape_contacts_domain(client, target_url)
+
+            tasks = [run_with_limit(url) for url in unique_urls]
             results = await asyncio.gather(*tasks, return_exceptions=True)
         
         results_dict = {}

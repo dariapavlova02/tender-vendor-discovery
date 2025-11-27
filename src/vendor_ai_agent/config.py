@@ -61,7 +61,7 @@ class DiscoveryConfig:
 class EnrichmentConfig:
     providers: List[str] = field(default_factory=lambda: ["static_contacts"])
     enable_contact_scraping: bool = True
-    enable_llm_fallback: bool = True
+    enable_llm_fallback: bool = False
     scraper_timeout_seconds: int = 5
     enable_google_maps: bool = True
     google_maps_min_confidence: float = 0.7
@@ -83,6 +83,9 @@ class EnrichmentConfig:
     enable_serper_fallback: bool = True
     enable_targeted_serper_fallback: bool = True
     website_search_min_confidence: float = 0.5
+    enable_playwright_fallback: bool = True
+    playwright_max_contexts: int = 2
+    playwright_wait_ms: int = 800
 
 
 @dataclass
@@ -107,7 +110,7 @@ class FilteringConfig:
 @dataclass
 class CapabilityMatchingConfig:
     enable_llm_assessment: bool = True
-    llm_model: str = "gpt-5-mini"
+    llm_model: str = "gpt-5.1"
     enable_website_scraping: bool = True
     scrape_timeout_seconds: int = 5
     max_content_chars: int = 3000

@@ -20,16 +20,23 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         self, 
         llm_provider: LLMProvider,
         scraper_timeout: int = 10,
-        enable_llm_fallback: bool = True,
+        enable_llm_fallback: bool = False,
         serper_client: Optional[SerperClient] = None,
-        enable_targeted_serper: bool = True
+        enable_targeted_serper: bool = True,
+        *,
+        enable_playwright_fallback: bool = False,
+        playwright_max_contexts: int = 2,
+        playwright_wait_ms: int = 800,
     ) -> None:
         super().__init__(name="contact_scraping")
         self.scraper = AsyncWebsiteScraper(
             timeout_seconds=scraper_timeout,
             max_concurrent_global=50,
             max_concurrent_per_domain=2,
-            enable_cache=True
+            enable_cache=True,
+            enable_playwright_fallback=enable_playwright_fallback,
+            playwright_max_contexts=playwright_max_contexts,
+            playwright_wait_ms=playwright_wait_ms,
         )
         self.extractor = ContactExtractor(llm_provider=llm_provider)
         self.enable_llm_fallback = enable_llm_fallback
@@ -165,6 +172,85 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         
         return vendor
     
+    async def enrich_batch_async(self, vendors: List[VendorRecord]) -> List[VendorRecord]:
+        if not vendors:
+            return []
+        
+        vendors_to_scrape = []
+        vendor_by_website = {}
+        
+        for vendor in vendors:
+            if self._has_real_contacts(vendor):
+                self.logger.debug(f"Vendor {vendor.company_name} already has real contacts, skipping")
+                continue
+            
+            if not vendor.website:
+                self.logger.debug(f"Vendor {vendor.company_name} has no website, skipping contact scraping")
+                continue
+            
+            vendors_to_scrape.append(vendor)
+            vendor_by_website[vendor.website] = vendor
+        
+        if not vendors_to_scrape:
+            return vendors
+        
+        urls = [v.website for v in vendors_to_scrape]
+        self.logger.info(f"Starting async contact scrape batch: {len(urls)} domains")
+        
+        scrape_results = await self.scraper.scrape_contacts_batch(urls)
+        
+        for vendor in vendors_to_scrape:
+            if vendor.website not in scrape_results:
+                self.logger.warning(f"No scrape result for {vendor.website}")
+                contacts = self.extractor.extract("", use_llm_fallback=False)
+            else:
+                scrape_result = scrape_results[vendor.website]
+                if scrape_result.status != "success" or not scrape_result.contact_text:
+                    self.logger.warning(f"Contact scrape failed: {scrape_result.status}")
+                    contacts = self.extractor.extract("", use_llm_fallback=False)
+                else:
+                    contacts = self.extractor.extract(
+                        scrape_result.contact_text, 
+                        use_llm_fallback=self.enable_llm_fallback
+                    )
+            
+            if contacts.emails:
+                vendor.email = contacts.emails[0]
+                vendor.filtering_metadata["email_source"] = contacts.email_sources[0]
+                vendor.filtering_metadata["email_confidence"] = contacts.confidence
+                vendor.filtering_metadata["all_emails"] = contacts.emails
+                self.logger.info(f"  ✓ Level 1: Found {len(contacts.emails)} emails via {contacts.extraction_method}")
+            else:
+                if not vendor.email:
+                    self._apply_backup_contacts(vendor)
+                
+                if not vendor.email and self.enable_targeted_serper and self.serper_client:
+                    await self._targeted_serper_search_async(vendor)
+            
+            if contacts.phones:
+                vendor.phone = contacts.phones[0]
+                vendor.filtering_metadata["phone_source"] = contacts.phone_sources[0]
+                vendor.filtering_metadata["phone_confidence"] = contacts.confidence
+                vendor.filtering_metadata["all_phones"] = contacts.phones
+                self.logger.info(f"  ✓ Found {len(contacts.phones)} phones via {contacts.extraction_method}")
+            else:
+                if not vendor.phone and 'serper_backup_phones' in vendor.filtering_metadata:
+                    phones = vendor.filtering_metadata['serper_backup_phones']
+                    vendor.phone = phones[0]
+                    vendor.filtering_metadata["phone_source"] = "serper_backup"
+                    vendor.filtering_metadata["phone_confidence"] = 0.7
+                    vendor.filtering_metadata["all_phones"] = phones
+                    self.logger.info(f"  ✓ Level 2: Using {len(phones)} backup phones from Serper snippets")
+            
+            if contacts.contact_names:
+                vendor.filtering_metadata["contact_names"] = contacts.contact_names
+                self.logger.info(f"  ✓ Found {len(contacts.contact_names)} contact names")
+            
+            if vendor.email or vendor.phone:
+                vendor.enrichment_flags.append(self.name)
+        
+        return vendors
+    
     def _apply_backup_contacts(self, vendor: VendorRecord) -> None:
         backup_emails = vendor.filtering_metadata.get('serper_backup_emails')
         if backup_emails:
@@ -203,6 +289,25 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
                     self.logger.info(
                         f"  ✓ Level 3: Found {len(filtered)} filtered emails via targeted Serper"
                     )
+
+            if (not filtered) and result.contacts and result.contacts.phones:
+                self.logger.info("  ↩️ Serper returned only phones, retrying for email")
+                email_query = f"{query} email"
+                email_result = serper.search_company(
+                    company_name=vendor.company_name,
+                    include_contacts=True,
+                    query=email_query,
+                )
+                if email_result.contacts and email_result.contacts.emails:
+                    filtered = filter_emails_for_vendor(vendor, email_result.contacts.emails)
+                    if filtered:
+                        vendor.email = filtered[0]
+                        vendor.filtering_metadata["email_source"] = "serper_targeted"
+                        vendor.filtering_metadata["email_confidence"] = 0.6
+                        vendor.filtering_metadata["all_emails"] = filtered
+                        self.logger.info(
+                            f"  ✓ Level 3: Email-only search found {len(filtered)} filtered emails"
+                        )
 
             if result.contacts and result.contacts.emails and not filtered:
                 self.logger.info("  ↩️ Serper returned only generic emails, skipped")
@@ -243,6 +348,25 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
                     self.logger.info(
                         f"  ✓ Level 3: Found {len(filtered)} filtered emails via targeted Serper"
                     )
+
+            if (not filtered) and result.contacts and result.contacts.phones:
+                self.logger.info("  ↩️ Serper returned only phones, retrying for email")
+                email_query = f"{query} email"
+                email_result = await serper.search_company_async(
+                    company_name=vendor.company_name,
+                    include_contacts=True,
+                    query=email_query,
+                )
+                if email_result.contacts and email_result.contacts.emails:
+                    filtered = filter_emails_for_vendor(vendor, email_result.contacts.emails)
+                    if filtered:
+                        vendor.email = filtered[0]
+                        vendor.filtering_metadata["email_source"] = "serper_targeted"
+                        vendor.filtering_metadata["email_confidence"] = 0.6
+                        vendor.filtering_metadata["all_emails"] = filtered
+                        self.logger.info(
+                            f"  ✓ Level 3: Email-only search found {len(filtered)} filtered emails"
+                        )
 
             if result.contacts and result.contacts.emails and not filtered:
                 self.logger.info("  ↩️ Serper returned only generic emails, skipped")

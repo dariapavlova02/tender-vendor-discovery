@@ -4,6 +4,7 @@ from .contact_scraping import ContactScrapingProvider
 from .sam_contact import SamContactProvider
 from .static_contacts import StaticContactsProvider
 from .website_content import WebsiteContentProvider
+from .async_website_content import AsyncWebsiteContentProvider
 from .sba_enrichment import SbaEnrichmentProvider
 from .canada_naics_enricher import CanadaNAICSEnricher
 from .hybrid_website_enricher import HybridWebsiteEnricher
@@ -16,6 +17,7 @@ __all__ = [
     "SamContactProvider",
     "StaticContactsProvider", 
     "WebsiteContentProvider",
+    "AsyncWebsiteContentProvider",
     "SbaEnrichmentProvider",
     "CanadaNAICSEnricher",
     "HybridWebsiteEnricher",
