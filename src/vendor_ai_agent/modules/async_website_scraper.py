@@ -281,6 +281,9 @@ class AsyncWebsiteScraper:
         if include_mailto and mailto_emails:
             text = f"{text} {' '.join(mailto_emails)}"
         text = " ".join(text.split())
+        printable_ratio = sum(ch.isprintable() and not ch.isspace() for ch in text) / max(len(text), 1)
+        if printable_ratio < 0.5:
+            return None
         return text if len(text) > min_length else None
 
     async def _ensure_playwright_browser(self) -> dict:
@@ -428,6 +431,8 @@ class AsyncWebsiteScraper:
         
         await self._rate_limiter.wait_if_needed(target_domain)
 
+        content_type = None
+
         for attempt in range(attempts + 1):
             try:
                 response = await client.get(
@@ -438,13 +443,16 @@ class AsyncWebsiteScraper:
                 )
                 response.raise_for_status()
                 status_code = response.status_code
+                content_type = response.headers.get("Content-Type", "")
 
-                text = self._extract_text_from_html(
-                    response.text,
-                    strip_navigation=True,
-                    include_mailto=False,
-                    min_length=100,
-                )
+                text = None
+                if "text" in content_type or "html" in content_type:
+                    text = self._extract_text_from_html(
+                        response.text,
+                        strip_navigation=True,
+                        include_mailto=False,
+                        min_length=100,
+                    )
 
                 return _result(text)
 
@@ -707,6 +715,8 @@ class AsyncWebsiteScraper:
         attempts = self.FORBIDDEN_RETRY_ATTEMPTS if retry_on_403 else 0
         target_domain = domain or self._get_domain(self._normalize_url(url))
 
+        content_type = None
+
         for attempt in range(attempts + 1):
             try:
                 response = await client.get(
@@ -716,13 +726,16 @@ class AsyncWebsiteScraper:
                     headers=self._get_domain_headers(target_domain),
                 )
                 response.raise_for_status()
-                
-                text = self._extract_text_from_html(
-                    response.text,
-                    strip_navigation=False,
-                    include_mailto=True,
-                    min_length=50,
-                )
+                content_type = response.headers.get("Content-Type", "")
+
+                text = None
+                if "text" in content_type or "html" in content_type:
+                    text = self._extract_text_from_html(
+                        response.text,
+                        strip_navigation=False,
+                        include_mailto=True,
+                        min_length=50,
+                    )
                 return text
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
