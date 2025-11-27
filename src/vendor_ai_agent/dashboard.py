@@ -30,6 +30,7 @@ from vendor_ai_agent.models import PipelineArtifacts, TenderSection
 from vendor_ai_agent.pipeline import TenderVendorPipeline
 from vendor_ai_agent.modules.document_processing.classifier import DocumentClassifier
 from vendor_ai_agent.modules.manual_enrichment import ManualEnrichmentService
+from vendor_ai_agent.auth import check_authentication, add_logout_button
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,8 +55,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+check_authentication()
+
 st.title("Tender Vendor AI Dashboard")
 st.markdown("Run the discovery pipeline, review extracted data, and export vendor shortlists.")
+add_logout_button()
 
 
 def render_config_sidebar() -> RuntimeConfig:
