@@ -284,6 +284,9 @@ class AsyncWebsiteScraper:
         printable_ratio = sum(ch.isprintable() and not ch.isspace() for ch in text) / max(len(text), 1)
         if printable_ratio < 0.5:
             return None
+        replacement_ratio = text.count("\ufffd") / max(len(text), 1)
+        if replacement_ratio > 0.05:
+            return None
         return text if len(text) > min_length else None
 
     async def _ensure_playwright_browser(self) -> dict:
