@@ -56,5 +56,3 @@ scripts/debug/
 README.md
 *.md
 docs/
-
-poetry.lock
