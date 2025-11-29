@@ -166,7 +166,7 @@ class TenderVendorPipeline:
                 smart_email_generator = SmartEmailGeneratorProvider(
                     serper_client=serper_client,
                     enable_mx_check=cfg.enrichment.smart_email_enable_mx_check,
-                    serper_validation=cfg.enrichment.smart_email_serper_validation,
+                    enable_serper_validation=cfg.enrichment.smart_email_serper_validation,
                     prefixes=cfg.enrichment.smart_email_prefixes,
                     max_candidates=cfg.enrichment.smart_email_max_candidates,
                     require_company_context=cfg.enrichment.smart_email_require_company_context,
