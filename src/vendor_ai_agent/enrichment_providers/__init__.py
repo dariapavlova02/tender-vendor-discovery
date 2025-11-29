@@ -10,6 +10,7 @@ from .canada_naics_enricher import CanadaNAICSEnricher
 from .hybrid_website_enricher import HybridWebsiteEnricher
 from .serper_client import SerperClient, SerperResult, SerperContact
 from .apollo_contacts import ApolloOrganizationEnrichmentProvider
+from .smart_email_generator import SmartEmailGeneratorProvider
 
 __all__ = [
     "BaseEnrichmentProvider", 
@@ -25,4 +26,5 @@ __all__ = [
     "SerperResult",
     "SerperContact",
     "ApolloOrganizationEnrichmentProvider",
+    "SmartEmailGeneratorProvider",
 ]

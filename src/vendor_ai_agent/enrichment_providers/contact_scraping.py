@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from urllib.parse import urlparse
 
 from ..models import VendorRecord
@@ -13,6 +13,9 @@ from ..modules.async_website_scraper import AsyncWebsiteScraper
 from .base import BaseEnrichmentProvider
 from .serper_client import SerperClient
 from .utils import filter_emails_for_vendor
+
+if TYPE_CHECKING:
+    from typing import Any
 
 
 class ContactScrapingProvider(BaseEnrichmentProvider):
@@ -27,6 +30,8 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         enable_playwright_fallback: bool = False,
         playwright_max_contexts: int = 2,
         playwright_wait_ms: int = 800,
+        enable_smart_email: bool = True,
+        smart_email_generator: Optional[Any] = None,
     ) -> None:
         super().__init__(name="contact_scraping")
         self.scraper = AsyncWebsiteScraper(
@@ -42,6 +47,8 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         self.enable_llm_fallback = enable_llm_fallback
         self.serper_client = serper_client
         self.enable_targeted_serper = enable_targeted_serper
+        self.enable_smart_email = enable_smart_email
+        self.smart_email_generator = smart_email_generator
         self.logger = logging.getLogger(__name__)
 
     def enrich(self, vendor: VendorRecord) -> VendorRecord:
@@ -83,6 +90,12 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
             
             if not vendor.email and self.enable_targeted_serper and self.serper_client:
                 self._targeted_serper_search(vendor)
+            
+            if not vendor.email and self.enable_smart_email and self.smart_email_generator:
+                self.logger.info(f"  → Level 4: Smart email generation")
+                vendor = self.smart_email_generator.enrich(vendor)
+                if vendor.email:
+                    self.logger.info(f"  ✓ Level 4: Generated email {vendor.email}")
         
         if contacts.phones:
             vendor.phone = contacts.phones[0]
@@ -147,6 +160,15 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
             
             if not vendor.email and self.enable_targeted_serper and self.serper_client:
                 await self._targeted_serper_search_async(vendor)
+            
+            if not vendor.email and self.enable_smart_email and self.smart_email_generator:
+                self.logger.info(f"  → Level 4: Smart email generation")
+                if hasattr(self.smart_email_generator, 'enrich_async'):
+                    vendor = await self.smart_email_generator.enrich_async(vendor)  # type: ignore[attr-defined]
+                else:
+                    vendor = self.smart_email_generator.enrich(vendor)
+                if vendor.email:
+                    self.logger.info(f"  ✓ Level 4: Generated email {vendor.email}")
         
         if contacts.phones:
             vendor.phone = contacts.phones[0]
@@ -226,6 +248,15 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
                 
                 if not vendor.email and self.enable_targeted_serper and self.serper_client:
                     await self._targeted_serper_search_async(vendor)
+                
+                if not vendor.email and self.enable_smart_email and self.smart_email_generator:
+                    self.logger.info(f"  → Level 4: Smart email generation")
+                    if hasattr(self.smart_email_generator, 'enrich_async'):
+                        vendor = await self.smart_email_generator.enrich_async(vendor)  # type: ignore[attr-defined]
+                    else:
+                        vendor = self.smart_email_generator.enrich(vendor)
+                    if vendor.email:
+                        self.logger.info(f"  ✓ Level 4: Generated email {vendor.email}")
             
             if contacts.phones:
                 vendor.phone = contacts.phones[0]
@@ -402,9 +433,9 @@ class ContactScrapingProvider(BaseEnrichmentProvider):
         domain = self._extract_domain(vendor.website)
         base = f'"{vendor.company_name}"'
         if domain:
-            query = f"site:{domain} (\"contact\" OR \"email\" OR \"support\") {base}"
+            query = f'site:{domain} ("sales@" OR "contact@" OR "info@" OR "hello@" OR "inquiry@") {base}'
         else:
-            query = f"{base} email contact"
+            query = f"{base} sales@ OR contact@ OR info@ OR email contact"
         if vendor.city:
             query += f' "{vendor.city}"'
         if vendor.state:

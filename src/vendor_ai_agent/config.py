@@ -88,6 +88,13 @@ class EnrichmentConfig:
     enable_playwright_fallback: bool = True
     playwright_max_contexts: int = 2
     playwright_wait_ms: int = 800
+    enable_smart_email_generation: bool = True
+    smart_email_enable_mx_check: bool = True
+    smart_email_serper_validation: bool = True
+    smart_email_prefixes: List[str] = field(default_factory=lambda: ['sales', 'contact', 'info', 'hello', 'inquiry', 'business'])
+    smart_email_max_candidates: int = 3
+    smart_email_require_company_context: bool = True
+    smart_email_min_confidence: float = 0.6
 
 
 @dataclass

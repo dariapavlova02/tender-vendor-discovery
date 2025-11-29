@@ -157,8 +157,23 @@ class TenderVendorPipeline:
             logging.info("AsyncWebsiteContentProvider registered for enrichment")
         
         if cfg.enrichment.enable_contact_scraping and cfg.serper_api_key:
-            from .enrichment_providers import ContactScrapingProvider, SerperClient
+            from .enrichment_providers import ContactScrapingProvider, SerperClient, SmartEmailGeneratorProvider
+            
             serper_client = SerperClient(api_key=cfg.serper_api_key)
+            
+            smart_email_generator = None
+            if cfg.enrichment.enable_smart_email_generation:
+                smart_email_generator = SmartEmailGeneratorProvider(
+                    serper_client=serper_client,
+                    enable_mx_check=cfg.enrichment.smart_email_enable_mx_check,
+                    serper_validation=cfg.enrichment.smart_email_serper_validation,
+                    prefixes=cfg.enrichment.smart_email_prefixes,
+                    max_candidates=cfg.enrichment.smart_email_max_candidates,
+                    require_company_context=cfg.enrichment.smart_email_require_company_context,
+                    min_confidence=cfg.enrichment.smart_email_min_confidence,
+                )
+                logging.info("SmartEmailGeneratorProvider initialized for Level 4 fallback")
+            
             contact_provider = ContactScrapingProvider(
                 llm_provider=self.llm_provider,
                 scraper_timeout=cfg.enrichment.scraper_timeout_seconds,
@@ -168,9 +183,11 @@ class TenderVendorPipeline:
                 enable_playwright_fallback=cfg.enrichment.enable_playwright_fallback,
                 playwright_max_contexts=cfg.enrichment.playwright_max_contexts,
                 playwright_wait_ms=cfg.enrichment.playwright_wait_ms,
+                enable_smart_email=cfg.enrichment.enable_smart_email_generation,
+                smart_email_generator=smart_email_generator,
             )
             enrichment_providers.append(contact_provider)
-            logging.info("ContactScrapingProvider registered with 3-level fallback")
+            logging.info("ContactScrapingProvider registered with 4-level fallback")
         
         self.context = PipelineContext(
             config=cfg,
