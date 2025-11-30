@@ -39,11 +39,17 @@ class ContactExtractor:
         r'([A-Z][a-z]+\s+[A-Z][a-z]+)[\s,]+(?:VP|Director|Manager|President|CEO)',
     ]
     
-    SPAM_PATTERNS = [
-        'example.com', 'test@', 'noreply@', 'donotreply@',
-        'webmaster@', 'abuse@', 'postmaster@', 'admin@',
+    SPAM_PREFIXES = [
+        'test@', 'noreply@', 'donotreply@',
         'no-reply@', 'bounce@', 'mailer@'
     ]
+    
+    SPAM_DOMAINS = [
+        'example.com', 'example.org', 'test.com', 'localhost',
+        'domain.com', 'email.com', 'mail.com'
+    ]
+    
+    TECHNICAL_PREFIXES = ['webmaster@', 'abuse@', 'postmaster@']
     
     def __init__(self, llm_provider: Optional[LLMProvider] = None):
         self.llm_provider = llm_provider
@@ -185,13 +191,27 @@ Return compact JSON ONLY:
     def _is_spam_email(self, email: str) -> bool:
         """Check if email is spam/placeholder."""
         email_lower = email.lower()
-        return any(pattern in email_lower for pattern in self.SPAM_PATTERNS)
+        
+        for pattern in self.SPAM_PREFIXES:
+            if email_lower.startswith(pattern):
+                return True
+        
+        domain = email_lower.split('@')[-1] if '@' in email_lower else ''
+        if domain in self.SPAM_DOMAINS:
+            return True
+        
+        for pattern in self.TECHNICAL_PREFIXES:
+            if email_lower.startswith(pattern):
+                return True
+        
+        return False
     
     def _prioritize_emails(self, emails: List[str]) -> List[str]:
         """Sort emails by business value (sales > contact > info)."""
         priority = {
             'sales': 10,
             'contact': 8,
+            'admin': 7,
             'business': 7,
             'inquiries': 7,
             'hello': 6,

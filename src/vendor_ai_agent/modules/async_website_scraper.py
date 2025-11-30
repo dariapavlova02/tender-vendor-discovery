@@ -126,8 +126,15 @@ class AsyncWebsiteScraper:
         "/contact",
         "/contact-us",
         "/contactus",
+        "/contacts",
+        "/contact.php",
+        "/contact.html",
+        "/contact.htm",
         "/get-in-touch",
+        "/reach-us",
+        "/reach",
         "/contact-info",
+        "/contact-form",
         "/about/contact",
     ]
     
@@ -531,13 +538,18 @@ class AsyncWebsiteScraper:
 
         async def _handle_path(target_url: str, timeout: float) -> bool:
             nonlocal blocked
-            content, status = await self._fetch_page(
+            result = await self._fetch_page(
                 client,
                 target_url,
                 timeout,
                 include_status=True,
                 domain=domain,
             )
+            
+            if result is None:
+                return False
+            
+            content, status = result
 
             if status == 403:
                 blocked = True
@@ -853,11 +865,14 @@ class AsyncWebsiteScraper:
                 contact_parts = []
                 successful_urls = []
                 
+                self.logger.debug(f"Attempting to scrape {len(self.CONTACT_PATHS)} contact paths for {domain}")
+                
                 for path in self.CONTACT_PATHS:
                     target_url = urljoin(base_url, path)
                     
                     domain_sem = await self._get_domain_semaphore(domain)
                     async with domain_sem:
+                        self.logger.debug(f"  Fetching contact page: {target_url}")
                         content = await self._fetch_page_with_contacts(
                             client,
                             target_url,
@@ -869,11 +884,13 @@ class AsyncWebsiteScraper:
                             contact_parts.append(content)
                             successful_urls.append(target_url)
                             self.logger.debug(f"  ✓ contact {path} ({len(content)} chars)")
+                        else:
+                            self.logger.debug(f"  ✗ contact {path} - no content")
                         
                         await asyncio.sleep(self.DELAY_BETWEEN_REQUESTS)
                 
                 if not contact_parts:
-                    self.logger.debug(f"No contact pages, trying homepage for {domain}")
+                    self.logger.debug(f"No contact pages found, trying homepage for {domain}")
                     domain_sem = await self._get_domain_semaphore(domain)
                     async with domain_sem:
                         homepage_content = await self._fetch_page_with_contacts(
@@ -886,6 +903,8 @@ class AsyncWebsiteScraper:
                             contact_parts.append(homepage_content)
                             successful_urls.append(base_url)
                             self.logger.debug(f"  ✓ homepage contact ({len(homepage_content)} chars)")
+                        else:
+                            self.logger.warning(f"  ✗ homepage also failed for {domain}")
             
             full_contact_text = " ".join(contact_parts)
             duration_ms = int((time.time() - start_time) * 1000)

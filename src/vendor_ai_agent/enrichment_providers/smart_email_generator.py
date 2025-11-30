@@ -54,7 +54,7 @@ class SmartEmailGeneratorProvider(BaseEnrichmentProvider):
         enable_serper_validation: bool = True,
         max_candidates: int = 3,
         require_company_context: bool = True,
-        min_confidence: float = 0.6,
+        min_confidence: float = 0.5,
     ) -> None:
         super().__init__(name="smart_email_generator")
         self.serper_client = serper_client
@@ -93,8 +93,8 @@ class SmartEmailGeneratorProvider(BaseEnrichmentProvider):
             self.logger.info(f"  ✗ Level 4: Domain {domain} has no MX records, skipping")
             return vendor
         
-        candidates = self._generate_candidates(domain)
-        self.logger.debug(f"  Generated {len(candidates)} email candidates")
+        candidates = self._generate_candidates(domain, vendor.company_name)
+        self.logger.debug(f"  Generated {len(candidates)} email candidates: {candidates}")
         
         if self.enable_serper_validation:
             validated = await self._validate_candidates_async(vendor, candidates)
@@ -154,9 +154,42 @@ class SmartEmailGeneratorProvider(BaseEnrichmentProvider):
             self.logger.warning(f"  ⚠ MX check error for {domain}: {e}")
             return True
     
-    def _generate_candidates(self, domain: str) -> List[str]:
-        """Generate prioritized email candidates."""
-        return [f"{prefix}@{domain}" for prefix in self.prefixes[:self.max_candidates]]
+    def _generate_candidates(self, domain: str, company_name: Optional[str] = None) -> List[str]:
+        """Generate prioritized email candidates including company-specific prefix."""
+        candidates = []
+        
+        if company_name:
+            company_prefix = self._extract_company_prefix(company_name)
+            if company_prefix and company_prefix not in self.prefixes:
+                candidates.append(f"{company_prefix}@{domain}")
+        
+        for prefix in self.prefixes[:self.max_candidates]:
+            candidates.append(f"{prefix}@{domain}")
+        
+        return candidates[:self.max_candidates + 1]
+    
+    @staticmethod
+    def _extract_company_prefix(company_name: str) -> Optional[str]:
+        """Extract company-based email prefix from company name.
+        
+        Examples:
+            "Bennett Group" → "bennett"
+            "Mader Group (CANADA)" → "mader"
+            "WSP" → "wsp"
+            "Alpine Building Maintenance" → "alpine"
+        """
+        cleaned = re.sub(r'\s*\([^)]*\)', '', company_name)
+        cleaned = re.sub(r'[^a-zA-Z\s]', '', cleaned).strip()
+        
+        if not cleaned:
+            return None
+        
+        first_word = cleaned.split()[0].lower()
+        
+        if len(first_word) >= 3:
+            return first_word
+        
+        return None
     
     async def _validate_candidates_async(
         self, 
@@ -167,10 +200,12 @@ class SmartEmailGeneratorProvider(BaseEnrichmentProvider):
         validated = []
         domain = self._extract_domain(vendor.website)
         
+        company_clean = re.sub(r'\s*\([^)]*\)', '', vendor.company_name).strip()
+        
         for email in candidates:
             prefix = email.split('@')[0]
             
-            query = f'site:{domain} "{email}" "{vendor.company_name}"'
+            query = f'site:{domain} contact email'
             
             try:
                 result = await self.serper_client.search_company_async(
@@ -191,11 +226,8 @@ class SmartEmailGeneratorProvider(BaseEnrichmentProvider):
                     title = item.get('title', '')
                     text = f"{title} {snippet}".lower()
                     
-                    if email.lower() not in text:
-                        continue
-                    
                     confidence = self._calculate_confidence(
-                        text, email, vendor.company_name, domain
+                        text, email, company_clean, domain
                     )
                     
                     if confidence >= self.min_confidence:
