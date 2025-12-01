@@ -2,7 +2,9 @@ import os
 import streamlit as st
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 import json
+from datetime import datetime, timezone
 
 
 ALLOWED_EMAILS = os.getenv("ALLOWED_EMAILS", "").split(",")
@@ -38,12 +40,48 @@ def get_user_email():
     return st.session_state.get("user_email")
 
 
+def refresh_token_if_needed():
+    if not st.session_state.get("authenticated"):
+        return
+    
+    token_expiry = st.session_state.get("credentials_expiry")
+    refresh_token = st.session_state.get("credentials_refresh_token")
+    
+    if not token_expiry or not refresh_token:
+        return
+    
+    if isinstance(token_expiry, str):
+        token_expiry = datetime.fromisoformat(token_expiry)
+    
+    if datetime.now(timezone.utc) >= token_expiry:
+        try:
+            credentials = Credentials(
+                token=st.session_state.get("credentials_token"),
+                refresh_token=refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=GOOGLE_CLIENT_ID,
+                client_secret=GOOGLE_CLIENT_SECRET
+            )
+            
+            credentials.refresh(Request())
+            
+            st.session_state.credentials_token = credentials.token
+            if credentials.expiry:
+                st.session_state.credentials_expiry = credentials.expiry.isoformat()
+            
+        except Exception as e:
+            st.error(f"Token refresh failed: {str(e)}")
+            st.session_state.authenticated = False
+
+
 def check_authentication():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     
     if "user_email" not in st.session_state:
         st.session_state.user_email = None
+    
+    refresh_token_if_needed()
     
     query_params = st.query_params
     
@@ -67,6 +105,13 @@ def check_authentication():
                 if email in ALLOWED_EMAILS:
                     st.session_state.authenticated = True
                     st.session_state.user_email = email
+                    
+                    st.session_state.credentials_token = credentials.token
+                    if credentials.expiry:
+                        st.session_state.credentials_expiry = credentials.expiry.isoformat()
+                    if credentials.refresh_token:
+                        st.session_state.credentials_refresh_token = credentials.refresh_token
+                    
                     st.query_params.clear()
                     st.rerun()
                 else:
@@ -105,4 +150,7 @@ def add_logout_button():
             if st.button("Logout"):
                 st.session_state.authenticated = False
                 st.session_state.user_email = None
+                st.session_state.credentials_token = None
+                st.session_state.credentials_expiry = None
+                st.session_state.credentials_refresh_token = None
                 st.rerun()
