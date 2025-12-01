@@ -58,6 +58,11 @@ OAUTH_REDIRECT_URI=https://your-app-name.up.railway.app/oauth2callback
 # Email Whitelist
 ALLOWED_EMAILS=dashapavlova999@gmail.com
 
+# Session persistence (recommended)
+AUTH_COOKIE_SECRET=generate-a-long-random-string
+# Optional: override how long sessions stay logged in (default 7 days)
+AUTH_SESSION_TTL_SECONDS=604800
+
 # OpenAI API Key (required for LLM analysis)
 OPENAI_API_KEY=sk-your-openai-api-key
 
