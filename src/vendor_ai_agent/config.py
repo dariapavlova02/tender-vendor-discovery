@@ -71,8 +71,8 @@ class EnrichmentConfig:
     enable_apollo_enrichment: bool = True
     enable_manual_enrichment: bool = True
     auto_enrich_on_missing: bool = False
-    max_enrichment_workers: int = 10
-    batch_size: int = 50
+    max_enrichment_workers: int = 30  # Optimized: 3x increase for parallel enrichment
+    batch_size: int = 100  # Optimized: 2x increase for better throughput
     min_batch_success_rate: float = 0.15
     max_enrichment_batches: int = 5
     target_relevant_vendors: int = 200
@@ -124,8 +124,8 @@ class CapabilityMatchingConfig:
     scrape_timeout_seconds: int = 5
     max_content_chars: int = 3000
     fallback_to_rule_based: bool = True
-    llm_parallelism: int = 5
-    llm_batch_size: int = 5
+    llm_parallelism: int = 50  # Optimized: 10x increase for parallel LLM calls
+    llm_batch_size: int = 20  # Optimized: 4x increase for batch processing
 
 
 @dataclass

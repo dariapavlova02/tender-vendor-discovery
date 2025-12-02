@@ -1,18 +1,22 @@
 """Streamlit Dashboard for Tender AI Agent Observability."""
 from __future__ import annotations
 
+import gc
 import io
 import json
 import logging
 import os
 import pickle
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -24,16 +28,16 @@ except ImportError:
     raise ImportError("Streamlit not installed. Run: poetry add streamlit")
 
 try:
-    import pandas as pd
+import pandas as pd
 except ImportError:
     pd = None
 
 from vendor_ai_agent.config import RuntimeConfig
-from vendor_ai_agent.models import PipelineArtifacts, TenderSection
-from vendor_ai_agent.pipeline import TenderVendorPipeline
+from vendor_ai_agent.models import ContactInfo, PipelineArtifacts, TenderSection, VendorMatchResult
 from vendor_ai_agent.modules.document_processing.classifier import DocumentClassifier
 from vendor_ai_agent.modules.manual_enrichment import ManualEnrichmentService
 from vendor_ai_agent.auth import check_authentication, add_logout_button
+from vendor_ai_agent.run_cache import RunCacheLoader
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 RUN_CACHE_DIR = Path("outputs/run_cache")
 RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+RUN_IDLE_TIMEOUT_SECONDS = int(os.getenv("RUN_CACHE_IDLE_TIMEOUT_SECONDS", "600"))
 
 st.set_page_config(
     page_title="Tender AI Agent Monitor",
@@ -68,34 +73,92 @@ st.markdown("Run the discovery pipeline, review extracted data, and export vendo
 add_logout_button()
 
 
+def _matches_to_dataframe(matches: List[VendorMatchResult]) -> pd.DataFrame:
+    if not matches or not pd:
+        return pd.DataFrame()
+
+    def serialize(match: VendorMatchResult) -> Dict[str, Any]:
+        vendor = match.vendor
+        primary_contact = vendor.primary_contact or ContactInfo()
+        return {
+            "company_name": vendor.company_name,
+            "website": vendor.website,
+            "email": vendor.email,
+            "phone": vendor.phone,
+            "location": vendor.location,
+            "city": vendor.city,
+            "state": vendor.state,
+            "country": vendor.country,
+            "industry": vendor.industry,
+            "source": vendor.source,
+            "is_past_winner": vendor.is_past_winner,
+            "enrichment_flags": json.dumps(vendor.enrichment_flags or []),
+            "uei": vendor.uei,
+            "duns": vendor.duns,
+            "cage_code": vendor.cage_code,
+            "business_types": json.dumps(vendor.business_types or []),
+            "primary_contact_name": primary_contact.name,
+            "primary_contact_email": primary_contact.email,
+            "primary_contact_phone": primary_contact.phone,
+            "geo_score": vendor.geo_score,
+            "preliminary_score": vendor.preliminary_score,
+            "filtering_metadata": json.dumps(vendor.filtering_metadata or {}),
+            "total_contract_value": vendor.total_contract_value,
+            "contract_count": vendor.contract_count,
+            "capability_match_score": match.capability_match_score,
+            "rationale": match.rationale,
+            "references": json.dumps(match.references or []),
+        }
+
+    return pd.DataFrame([serialize(m) for m in matches])
+
+
 def _persist_artifacts_to_disk(artifacts: PipelineArtifacts) -> dict:
-    """Serialize artifacts to disk and return run metadata."""
+    run_meta = st.session_state.get("active_run")
+    if run_meta:
+        run_path = Path(run_meta.get("path", ""))
+        if run_path.is_dir() and pd is not None:
+            df_final = _matches_to_dataframe(artifacts.final_matches)
+            if not df_final.empty:
+                df_final.to_parquet(run_path / "final_matches.parquet", index=False)
+            df_all = _matches_to_dataframe(artifacts.all_matches or artifacts.final_matches)
+            if not df_all.empty:
+                df_all.to_parquet(run_path / "all_matches.parquet", index=False)
+            run_meta["updated_at"] = datetime.utcnow().isoformat()
+            st.session_state["active_run"] = run_meta
+            return run_meta
+
     RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
-    run_file = RUN_CACHE_DIR / f"{run_id}-{uuid.uuid4().hex[:6]}.pkl"
-    with run_file.open("wb") as fh:
-        pickle.dump(artifacts, fh)
-    return {
-        "id": run_id,
-        "path": str(run_file),
-        "created_at": datetime.utcnow().isoformat(),
+    run_dir = RUN_CACHE_DIR / f"{run_id}-{uuid.uuid4().hex[:6]}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    df_final = _matches_to_dataframe(artifacts.final_matches)
+    if not df_final.empty:
+        df_final.to_parquet(run_dir / "final_matches.parquet", index=False)
+    df_all = _matches_to_dataframe(artifacts.all_matches or artifacts.final_matches)
+    if not df_all.empty:
+        df_all.to_parquet(run_dir / "all_matches.parquet", index=False)
+    metadata_payload = {
+        "tender_sections": artifacts.tender_sections,
+        "tender_profile": artifacts.tender_profile,
+        "filtering_metrics": artifacts.filtering_metrics,
+        "batch_id": getattr(artifacts, "batch_id", 1),
+        "processed_batches": getattr(artifacts, "processed_batches", []),
     }
+    with (run_dir / "metadata.pkl").open("wb") as fh:
+        pickle.dump(metadata_payload, fh)
+    meta = {
+        "id": run_id,
+        "path": str(run_dir),
+        "created_at": datetime.utcnow().isoformat(),
+        "last_viewed_at": datetime.utcnow().isoformat(),
+    }
+    st.session_state["active_run"] = meta
+    return meta
 
 
 def _overwrite_cached_run(artifacts: PipelineArtifacts) -> None:
-    """Rewrite the current cached run file with updated artifacts."""
-    run_meta = st.session_state.get("active_run")
-    if not run_meta:
-        run_meta = _persist_artifacts_to_disk(artifacts)
-    else:
-        run_path = Path(run_meta["path"])
-        run_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = run_path.with_suffix(".tmp")
-        with tmp_path.open("wb") as fh:
-            pickle.dump(artifacts, fh)
-        tmp_path.replace(run_path)
-        run_meta["updated_at"] = datetime.utcnow().isoformat()
-    st.session_state["active_run"] = run_meta
+    _persist_artifacts_to_disk(artifacts)
 
 
 def _clear_cached_run(delete_file: bool = True) -> None:
@@ -104,12 +167,15 @@ def _clear_cached_run(delete_file: bool = True) -> None:
     if delete_file and run_meta:
         run_path = Path(run_meta.get("path", ""))
         try:
-            if run_path.exists():
+            if run_path.is_file():
                 run_path.unlink()
+            elif run_path.is_dir():
+                shutil.rmtree(run_path, ignore_errors=True)
         except OSError as exc:
             logger.warning("Failed to delete cached run %s: %s", run_path, exc)
     st.session_state.pop("config", None)
     st.session_state.pop("apollo_flash", None)
+    gc.collect()
 
 
 def _load_cached_artifacts() -> Optional[PipelineArtifacts]:
@@ -122,13 +188,72 @@ def _load_cached_artifacts() -> Optional[PipelineArtifacts]:
         _clear_cached_run(delete_file=False)
         return None
 
+    if run_path.is_file():
+        try:
+            with run_path.open("rb") as fh:
+                return pickle.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to load cached artifacts %s: %s", run_path, exc)
+            _clear_cached_run(delete_file=False)
+            return None
+
     try:
-        with run_path.open("rb") as fh:
-            return pickle.load(fh)
+        loader = RunCacheLoader(run_path)
+        artifacts = loader.load_metadata()
+        artifacts.final_matches = loader.load_final_matches_objects()
+        artifacts.all_matches = loader.load_all_matches_objects()
+        return artifacts
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to load cached artifacts %s: %s", run_path, exc)
+        logger.warning("Failed to load run directory %s: %s", run_path, exc)
         _clear_cached_run(delete_file=False)
         return None
+
+
+def _mark_run_downloaded(source: str) -> None:
+    run_meta = st.session_state.get("active_run")
+    if not run_meta:
+        return
+    timestamp = datetime.utcnow().isoformat()
+    run_meta["downloaded_at"] = timestamp
+    run_meta["last_viewed_at"] = timestamp
+    run_meta["last_download_source"] = source
+    st.session_state["active_run"] = run_meta
+
+
+def _touch_active_run() -> None:
+    run_meta = st.session_state.get("active_run")
+    if not run_meta:
+        return
+    run_meta["last_viewed_at"] = datetime.utcnow().isoformat()
+    st.session_state["active_run"] = run_meta
+
+
+def _maybe_cleanup_inactive_run() -> None:
+    run_meta = st.session_state.get("active_run")
+    if not run_meta:
+        return
+
+    downloaded_at = run_meta.get("downloaded_at")
+    if not downloaded_at:
+        return
+
+    last_view = run_meta.get("last_viewed_at", downloaded_at)
+    try:
+        last_view_dt = datetime.fromisoformat(last_view)
+    except ValueError:
+        last_view_dt = datetime.utcnow()
+
+    if datetime.utcnow() - last_view_dt >= timedelta(seconds=RUN_IDLE_TIMEOUT_SECONDS):
+        logger.info("Active run expired after %s seconds of inactivity", RUN_IDLE_TIMEOUT_SECONDS)
+        _clear_cached_run()
+
+
+def _materialize_run_artifacts(run_dir: Path) -> PipelineArtifacts:
+    loader = RunCacheLoader(run_dir)
+    artifacts = loader.load_metadata()
+    artifacts.final_matches = loader.load_final_matches_objects()
+    artifacts.all_matches = loader.load_all_matches_objects()
+    return artifacts
 
 
 def render_config_sidebar() -> RuntimeConfig:
@@ -426,7 +551,8 @@ def render_overview_tab(artifacts: PipelineArtifacts):
         st.metric("Detected Sector", sector)
     
     with col3:
-        st.metric("Vendors Discovered", len(artifacts.raw_vendors))
+        raw_count = getattr(artifacts, "raw_vendor_count", len(artifacts.raw_vendors))
+        st.metric("Vendors Discovered", raw_count)
     
     with col4:
         st.metric("Final Matches", len(artifacts.final_matches))
@@ -754,7 +880,9 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
                 label="📥 Download Results as CSV",
                 data=csv_data,
                 file_name="vendor_matches.csv",
-                mime="text/csv"
+                mime="text/csv",
+                on_click=_mark_run_downloaded,
+                kwargs={"source": "vendors_matches_csv"},
             )
         else:
             st.json(match_data)
@@ -803,6 +931,8 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
                 data=csv,
                 file_name="vendor_candidates.csv",
                 mime="text/csv",
+                on_click=_mark_run_downloaded,
+                kwargs={"source": "vendors_candidates_csv"},
             )
         else:
             st.json(rows)
@@ -811,10 +941,10 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
         col1, col2 = st.columns(2)
         
         with col1:
-            st.metric("Raw Vendors", len(artifacts.raw_vendors))
-            st.metric("After Enrichment", len(artifacts.enriched_vendors))
-            st.metric("Final Matches", len(artifacts.final_matches))
-            st.metric("Scored Candidates", len(artifacts.all_matches or []))
+            st.metric("Raw Vendors", getattr(artifacts, "raw_vendor_count", len(artifacts.raw_vendors)))
+            st.metric("After Enrichment", getattr(artifacts, "enriched_vendor_count", len(artifacts.enriched_vendors)))
+            st.metric("Final Matches", getattr(artifacts, "final_match_count", len(artifacts.final_matches)))
+            st.metric("Scored Candidates", getattr(artifacts, "all_match_count", len(artifacts.all_matches or [])))
         
         with col2:
             if artifacts.final_matches:
@@ -870,7 +1000,7 @@ def render_pipeline_results(
     artifacts: PipelineArtifacts,
     config: RuntimeConfig,
     *,
-    pipeline: Optional[TenderVendorPipeline] = None,
+    pipeline: Optional[Any] = None,
     cached_run: bool = False,
 ) -> None:
     """Render the full dashboard + export controls for a finished run."""
@@ -927,6 +1057,8 @@ def render_pipeline_results(
                 data=csv_bytes,
                 file_name="vendor_matches.csv",
                 mime="text/csv",
+                on_click=_mark_run_downloaded,
+                kwargs={"source": "export_csv"},
             )
         else:
             st.info("CSV export available after matches are generated.")
@@ -941,56 +1073,17 @@ def render_pipeline_results(
                 data=excel_buffer.getvalue(),
                 file_name="vendor_matches.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                on_click=_mark_run_downloaded,
+                kwargs={"source": "export_excel"},
             )
         else:
             st.info("Excel export available after matches are generated.")
 
     with col_exp3:
-        if st.button("📂 Save to outputs", type="secondary"):
-            try:
-                output_dir = Path("outputs")
-                output_dir.mkdir(exist_ok=True)
-                pipeline_to_use = pipeline or TenderVendorPipeline(config)
-                pipeline_to_use.save_outputs(artifacts.final_matches, directory=output_dir)
-                st.success("✅ Results saved to outputs/ directory")
-            except Exception as e:
-                st.error(f"Export failed: {e}")
-
-def apply_extraction_edits(profile):
-    edited_data = st.session_state.get('edited_extraction')
-    
-    if not edited_data:
-        return profile, []
-    
-    structured = profile.doc_extracted.structured
-    changes = []
-    
-    if edited_data.get('city') is not None and edited_data['city'] != structured.location.city:
-        old_val = structured.location.city or '(empty)'
-        structured.location.city = edited_data['city']
-        changes.append(f"📍 City: {old_val} → {edited_data['city']}")
-    
-    if edited_data.get('state') is not None and edited_data['state'] != structured.location.state_province:
-        old_val = structured.location.state_province or '(empty)'
-        structured.location.state_province = edited_data['state']
-        changes.append(f"📍 State: {old_val} → {edited_data['state']}")
-    
-    if edited_data.get('country') is not None and edited_data['country'] != structured.location.country:
-        old_val = structured.location.country or '(empty)'
-        structured.location.country = edited_data['country']
-        changes.append(f"📍 Country: {old_val} → {edited_data['country']}")
-    
-    if edited_data.get('naics_codes') is not None:
-        old_codes = set(structured.naics_codes or [])
-        new_codes = set(edited_data['naics_codes'])
-        if old_codes != new_codes:
-            structured.naics_codes = edited_data['naics_codes']
-            changes.append(f"🏷️ NAICS: {', '.join(old_codes or ['(empty)'])} → {', '.join(new_codes)}")
-    
-    return profile, changes
-
-
+        st.info("Use download buttons or export directly from run cache (Parquet).")
 def main():
+    _maybe_cleanup_inactive_run()
+    _touch_active_run()
     config = render_config_sidebar()
     
     st.markdown("### 📤 Upload Tender Documents")
@@ -1066,90 +1159,124 @@ def main():
     # New run requested: drop any previous cached run before starting work.
     _clear_cached_run()
 
+    edited_data = st.session_state.get('edited_extraction')
+    worker_payload = {
+        "config": config,
+        "file_paths": [str(path) for path in selected_files],
+        "edited_extraction": edited_data,
+        "disable_auto_ingestion": not config.enable_auto_ingestion,
+    }
+
+    run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
+    run_dir = RUN_CACHE_DIR / f"{run_id}-{uuid.uuid4().hex[:6]}"
+    if run_dir.exists():
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+    status_text = st.empty()
+    log_placeholder = st.empty()
+    last_log_line = ""
+    progress_bar = st.progress(5)
+
+    status_text.text("🔧 Preparing pipeline worker...")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tmp_input:
+        pickle.dump(worker_payload, tmp_input)
+        worker_input_path = Path(tmp_input.name)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "vendor_ai_agent.pipeline_worker",
+        str(worker_input_path),
+        str(run_dir),
+    ]
+
     try:
-        status_text = st.empty()
-        progress_bar = st.progress(0)
-        
-        status_text.text("🔧 Initializing pipeline...")
-        pipeline = TenderVendorPipeline(config)
-        progress_bar.progress(20)
-        
-        status_text.text("📄 Parsing documents...")
-        progress_bar.progress(30)
-        
-        status_text.text("🧠 Extracting requirements & profiling...")
-        progress_bar.progress(50)
-        
-        status_text.text("🔍 Discovering & enriching vendors...")
-        progress_bar.progress(70)
-        
-        try:
-            artifacts = pipeline.run(selected_files, disable_auto_ingestion=not config.enable_auto_ingestion)
-        except Exception as e:
-            progress_bar.empty()
-            status_text.empty()
-            st.error("🚨 **Vendor Discovery Failed - API Unavailable**")
-            st.error(f"**Error:** {str(e)}")
-            st.warning("**Please try again later.** The external vendor API (SAM.gov or SBA) is currently unavailable.")
-            st.stop()
-        
-        _, changes_applied = apply_extraction_edits(artifacts.tender_profile)
-        if changes_applied:
-            st.info("🔄 **Manual edits detected - re-running pipeline with updated extraction data:**")
-            for change in changes_applied:
-                st.markdown(f"  - {change}")
-            
-            status_text.text("🔍 Re-discovering & filtering vendors with updated data...")
-            progress_bar.progress(50)
-            
-            try:
-                discovered_vendors = pipeline.context.vendor_discovery.discover(artifacts.tender_profile)
-            except Exception as e:
-                progress_bar.empty()
-                status_text.empty()
-                st.error("🚨 **Vendor Discovery Failed - API Unavailable**")
-                st.error(f"**Error:** {str(e)}")
-                st.warning("**Please try again later.** The external vendor API (SAM.gov or SBA) is currently unavailable.")
-                st.stop()
-            filtered_vendors = pipeline.context.vendor_filter.filter(artifacts.tender_profile, discovered_vendors)
-            filtering_metrics = pipeline.context.vendor_filter.get_metrics()
-            enriched_vendors = pipeline.context.vendor_enricher.enrich(filtered_vendors)
-            matches = pipeline.context.capability_matcher.score(artifacts.tender_profile, enriched_vendors)
-            
-            from vendor_ai_agent.models import PipelineArtifacts as PA
-            artifacts = PA(
-                tender_sections=artifacts.tender_sections,
-                tender_profile=artifacts.tender_profile,
-                raw_vendors=discovered_vendors,
-                enriched_vendors=enriched_vendors,
-                filtered_vendors=filtered_vendors,
-                filtering_metrics=filtering_metrics,
-                final_matches=matches,
-            )
-            
-            st.session_state.pop('edited_extraction', None)
-        
-        progress_bar.progress(100)
-        status_text.text("✅ Pipeline completed successfully!")
-        
-        st.success("✅ Pipeline execution completed!")
-        
-        if config.enable_manual_review:
-            st.info("💡 Manual review mode enabled. Check the 'Extracted Data' tab to edit values before re-running.")
-
-        st.session_state['config'] = config
-        st.session_state['active_run'] = _persist_artifacts_to_disk(artifacts)
-
-        render_pipeline_results(
-            artifacts,
-            config,
-            pipeline=pipeline,
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
-        
     except Exception as exc:
-        st.error(f"❌ Pipeline failed: {exc}")
-        logger.exception("Pipeline execution failed")
-        st.exception(exc)
+        worker_input_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        st.error(f"Failed to spawn worker: {exc}")
+        return
+
+    status_text.text("🚀 Pipeline worker running...")
+    progress_bar.progress(20)
+
+    try:
+        if process.stdout:
+            for line in process.stdout:
+                cleaned = line.strip()
+                if not cleaned:
+                    continue
+                last_log_line = cleaned
+                log_placeholder.text(cleaned)
+        return_code = process.wait()
+    finally:
+        worker_input_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+
+    if return_code != 0:
+        progress_bar.empty()
+        status_text.empty()
+        st.error("🚨 Pipeline worker failed")
+        st.error(last_log_line or "Unknown error")
+        if run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        return
+
+    if not run_dir.exists():
+        progress_bar.empty()
+        status_text.empty()
+        st.error("Pipeline worker finished without producing output.")
+        return
+
+    metadata_path = run_dir / "metadata.pkl"
+    if not metadata_path.exists():
+        st.error("Worker output missing metadata")
+        shutil.rmtree(run_dir, ignore_errors=True)
+        return
+
+    run_state_path = run_dir / "run_state.pkl"
+    changes_applied: list[str] = []
+    if run_state_path.exists():
+        with run_state_path.open("rb") as fh:
+            run_state = pickle.load(fh)
+            changes_applied = run_state.get("changes", [])
+
+    progress_bar.progress(100)
+    status_text.text("✅ Pipeline completed successfully!")
+    st.success("✅ Pipeline execution completed!")
+
+    if changes_applied:
+        st.info("🔄 **Manual edits detected - pipeline rerun with overrides:**")
+        for change in changes_applied:
+            st.markdown(f"  - {change}")
+
+    if config.enable_manual_review:
+        st.info("💡 Manual review mode enabled. Check the 'Extracted Data' tab to edit values before re-running.")
+
+    timestamp = datetime.utcnow().isoformat()
+    st.session_state['config'] = config
+    st.session_state['active_run'] = {
+        "id": run_id,
+        "path": str(run_dir),
+        "created_at": timestamp,
+        "last_viewed_at": timestamp,
+    }
+    st.session_state.pop('edited_extraction', None)
+    artifacts = _materialize_run_artifacts(run_dir)
+
+    render_pipeline_results(
+        artifacts,
+        config,
+        pipeline=None,
+    )
+
+    del artifacts
+    gc.collect()
 
 
 if __name__ == "__main__":

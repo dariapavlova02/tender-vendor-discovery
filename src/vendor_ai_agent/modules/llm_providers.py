@@ -153,16 +153,16 @@ class AsyncOpenAIProvider(LLMProvider):
         self.logger = logging.getLogger(self.__class__.__name__)
     
     def generate(self, prompt: str, response_format: Optional[str] = None, model: Optional[str] = None) -> str:
-        """Sync wrapper for backward compatibility."""
+        """Sync wrapper for backward compatibility.
+        
+        Note: This is a fallback for legacy sync code. Prefer generate_async() when possible.
+        """
         try:
             loop = asyncio.get_running_loop()
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    lambda: asyncio.run(self.generate_async(prompt, response_format, model))
-                )
-                return future.result()
+            # Already in event loop - schedule coroutine and wait
+            return loop.run_until_complete(self.generate_async(prompt, response_format, model))
         except RuntimeError:
+            # No event loop - create one
             return asyncio.run(self.generate_async(prompt, response_format, model))
     
     async def generate_async(self, prompt: str, response_format: Optional[str] = None, model: Optional[str] = None) -> str:

@@ -37,15 +37,18 @@ from .modules import (
     OutputGenerator,
     RequirementExtractor,
     VendorDiscovery,
-    VendorEnricher,
     VendorFilter,
 )
+from .modules.enrichment import VendorEnricher
+from .modules.http_client import HttpClientFactory
+from .modules.ingestion import TenderIngestionRouter
+from .modules.llm_providers import AsyncOpenAIProvider, OpenAIProvider, WebsiteContentProvider
 
 
 from .sources.sam_entity import SamEntitySource
 from .sources import CanadaContractsVendorSource, StaticDirectorySource, ApolloSearchSource, SerperVendorSource
 from .database.connection import get_session
-from .enrichment_providers import AsyncWebsiteContentProvider, WebsiteContentProvider
+from .enrichment_providers import AsyncWebsiteContentProvider
 
 @dataclass
 class PipelineContext:
@@ -77,7 +80,7 @@ class TenderVendorPipeline:
                 self.llm_provider = AsyncOpenAIProvider(
                     default_model=cfg.llm.cheap_model,
                     use_flex_tier=cfg.llm.use_flex_tier,
-                    concurrency_limit=20
+                    concurrency_limit=100  # Optimized: 5x increase for parallel LLM processing
                 )
                 logging.info("Async LLM provider initialized with model: %s", cfg.llm.cheap_model)
             else:
@@ -215,6 +218,23 @@ class TenderVendorPipeline:
         )
 
     def run(
+        self,
+        tender_files: Iterable[Path],
+        *,
+        ingestion_request: Optional[TenderIngestionRequest] = None,
+        disable_auto_ingestion: bool = False,
+    ) -> PipelineArtifacts:
+        """Run the pipeline with resource cleanup."""
+        try:
+            return self._run_internal(
+                tender_files,
+                ingestion_request=ingestion_request,
+                disable_auto_ingestion=disable_auto_ingestion
+            )
+        finally:
+            self.cleanup()
+
+    def _run_internal(
         self,
         tender_files: Iterable[Path],
         *,
@@ -424,6 +444,22 @@ class TenderVendorPipeline:
             batch_id=batch_info["batch_id"],
             processed_batches=processed_batches_view,
         )
+
+    def cleanup(self) -> None:
+        """Cleanup pipeline resources."""
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                # If loop is running, schedule cleanup
+                loop.create_task(HttpClientFactory.close())
+            else:
+                # If loop is closed/not running, run synchronously
+                loop.run_until_complete(HttpClientFactory.close())
+        except RuntimeError:
+            # No event loop
+            asyncio.run(HttpClientFactory.close())
+        except Exception as e:
+            logging.warning(f"Error cleaning up pipeline resources: {e}")
 
     def _hydrate_from_ingestion(
         self,

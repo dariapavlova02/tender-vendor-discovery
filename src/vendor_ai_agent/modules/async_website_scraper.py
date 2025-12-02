@@ -16,9 +16,11 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from .http_client import HttpClientFactory
+
 
 class DomainRateLimiter:
-    def __init__(self, min_delay_seconds: float = 2.0):
+    def __init__(self, min_delay_seconds: float = 0.5):  # Optimized: 4x faster for better throughput
         self.min_delay = min_delay_seconds
         self._last_request: Dict[str, float] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
@@ -183,11 +185,11 @@ class AsyncWebsiteScraper:
     
     def __init__(
         self,
-        timeout_seconds: float = 3.0,
+        timeout_seconds: float = 5.0,  # Optimized: increased from 3.0 for better success rate
         max_content_chars: int = 3000,
         min_content_chars: int = 500,
-        max_concurrent_global: int = 15,
-        max_concurrent_per_domain: int = 1,
+        max_concurrent_global: int = 50,  # Optimized: 3.3x increase (was 15)
+        max_concurrent_per_domain: int = 3,  # Optimized: 3x increase (was 1),
         enable_cache: bool = True,
         cache_dir: str = "outputs/cache/websites",
         cache_ttl_hours: int = 24,
@@ -214,7 +216,7 @@ class AsyncWebsiteScraper:
             self.cache = WebsiteCache(cache_dir=cache_dir, ttl_hours=cache_ttl_hours)
         self.max_batch_concurrency = max(1, max_batch_concurrency)
         self._domain_headers: Dict[str, Dict[str, str]] = {}
-        self._rate_limiter = DomainRateLimiter(min_delay_seconds=2.0)
+        self._rate_limiter = DomainRateLimiter(min_delay_seconds=0.5)  # Optimized: 4x faster (was 2.0)
 
         self.enable_playwright_fallback = enable_playwright_fallback
         self.playwright_max_contexts = max(1, playwright_max_contexts)
@@ -700,18 +702,17 @@ class AsyncWebsiteScraper:
         unique_urls = list(dict.fromkeys(url for url in website_urls if url))
         self.logger.info(f"Starting async scrape: {len(unique_urls)} domains")
         
-        async with httpx.AsyncClient(
-            verify=False,
-            http2=True,
-        ) as client:
-            semaphore = asyncio.Semaphore(self.max_batch_concurrency)
+        # Use shared client with connection pooling
+        client = await HttpClientFactory.get_client()
+        
+        semaphore = asyncio.Semaphore(self.max_batch_concurrency)
 
-            async def run_with_limit(target_url: str):
-                async with semaphore:
-                    return await self._scrape_domain(client, target_url)
+        async def run_with_limit(target_url: str):
+            async with semaphore:
+                return await self._scrape_domain(client, target_url)
 
-            tasks = [run_with_limit(url) for url in unique_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [run_with_limit(url) for url in unique_urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
         results_dict = {}
         for url, result in zip(unique_urls, results):
@@ -950,18 +951,18 @@ class AsyncWebsiteScraper:
         unique_urls = list(dict.fromkeys(url for url in website_urls if url))
         self.logger.info(f"Starting async contact scrape: {len(unique_urls)} domains")
         
-        async with httpx.AsyncClient(
-            verify=False,
-            http2=True,
-        ) as client:
-            semaphore = asyncio.Semaphore(self.max_batch_concurrency)
+        # Use shared client with connection pooling
+        client = await HttpClientFactory.get_client()
+        
+        semaphore = asyncio.Semaphore(self.max_batch_concurrency)
 
-            async def run_with_limit(target_url: str):
-                async with semaphore:
-                    return await self._scrape_contacts_domain(client, target_url)
+        async def run_with_limit(target_url: str):
+            async with semaphore:
+                return await self._scrape_contacts_domain(client, target_url)
 
-            tasks = [run_with_limit(url) for url in unique_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [run_with_limit(url) for url in unique_urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
         
         results_dict = {}
         for url, result in zip(unique_urls, results):
@@ -985,20 +986,27 @@ class AsyncWebsiteScraper:
             f"Contact batch complete: {success_count}/{len(unique_urls)} successful "
             f"({cache_hits} from cache)"
         )
-        
-        return results_dict
+
+        try:
+            return results_dict
+        finally:
+            if self.enable_playwright_fallback:
+                try:
+                    await self.cleanup()
+                except Exception as cleanup_error:  # noqa: BLE001
+                    self.logger.debug("Playwright cleanup failed: %s", cleanup_error)
     
     def scrape_contacts_batch_sync(self, website_urls: List[str]) -> Dict[str, ContactScrapedContent]:
-        """Synchronous wrapper for scrape_contacts_batch."""
+        """Synchronous wrapper for scrape_contacts_batch.
+        
+        Note: Prefer async version when possible for better performance.
+        """
         try:
             loop = asyncio.get_running_loop()
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    lambda: asyncio.run(self.scrape_contacts_batch(website_urls))
-                )
-                return future.result()
+            # Already in event loop - schedule and wait
+            return loop.run_until_complete(self.scrape_contacts_batch(website_urls))
         except RuntimeError:
+            # No event loop - create one
             return asyncio.run(self.scrape_contacts_batch(website_urls))
     
     async def cleanup(self) -> None:
