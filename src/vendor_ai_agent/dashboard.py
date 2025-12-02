@@ -28,7 +28,7 @@ except ImportError:
     raise ImportError("Streamlit not installed. Run: poetry add streamlit")
 
 try:
-import pandas as pd
+    import pandas as pd
 except ImportError:
     pd = None
 
