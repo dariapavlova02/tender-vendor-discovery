@@ -1214,6 +1214,7 @@ def main():
                     continue
                 last_log_line = cleaned
                 log_placeholder.text(cleaned)
+                print(f"[worker] {cleaned}")
         return_code = process.wait()
     finally:
         worker_input_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
