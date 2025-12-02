@@ -41,7 +41,6 @@ from .modules import (
 )
 from .modules.enrichment import VendorEnricher
 from .modules.http_client import HttpClientFactory
-from .modules.ingestion import TenderIngestionRouter
 from .modules.llm_providers import AsyncOpenAIProvider, OpenAIProvider, WebsiteContentProvider
 
 
