@@ -2,6 +2,8 @@
 maxUploadSize = 500
 maxMessageSize = 500
 enableXsrfProtection = true
+disconnectedSessionTTL = 3600
+websocketPingInterval = 120
 
 [browser]
 gatherUsageStats = false
