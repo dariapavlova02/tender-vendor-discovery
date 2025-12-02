@@ -3,7 +3,6 @@ maxUploadSize = 500
 maxMessageSize = 500
 enableCORS = false
 enableXsrfProtection = true
-maxMessageSize = 200
 
 [browser]
 gatherUsageStats = false

@@ -547,12 +547,22 @@ class TenderVendorPipeline:
         )
         
         try:
+            seen_domains = set()
+            for v in vendors:
+                domain = v.filtering_metadata.get('serper_domain') or v.filtering_metadata.get('domain')
+                if domain:
+                    seen_domains.add(domain.lower())
+            
             serper_source = SerperVendorSource(
                 api_key=cfg.serper_api_key,
                 query_limit=cfg.discovery.serper_max_queries,
                 config=cfg
             )
-            serper_vendors = serper_source.search(profile, target_count=deficit)
+            serper_vendors = serper_source.search(
+                profile, 
+                target_count=deficit,
+                seen_domains=seen_domains
+            )
             if serper_vendors:
                 self._log_discovery_metrics(serper_vendors, note="serper_primary")
                 vendors = vendors + serper_vendors

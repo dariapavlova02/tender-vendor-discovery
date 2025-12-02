@@ -193,7 +193,7 @@ class AsyncOpenAIProvider(LLMProvider):
         }
         
         if "mini" in target_model.lower() or "nano" in target_model.lower():
-            params["max_completion_tokens"] = 2500
+            params["max_completion_tokens"] = 4096
         else:
             params["temperature"] = 0.1
         

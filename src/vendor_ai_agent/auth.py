@@ -6,7 +6,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import streamlit as st
 from google_auth_oauthlib.flow import Flow
@@ -21,6 +21,7 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "https://your-app.railway.app/oauth2callback")
 
 SESSION_COOKIE_NAME = os.getenv("AUTH_SESSION_COOKIE", "vendor_ai_session")
+SESSION_QUERY_KEY = os.getenv("AUTH_SESSION_QUERY_KEY", "session")
 SESSION_COOKIE_PATH = os.getenv("AUTH_SESSION_COOKIE_PATH", "/")
 SESSION_COOKIE_SAMESITE = os.getenv("AUTH_SESSION_COOKIE_SAMESITE", "Lax")
 SESSION_COOKIE_SECURE = os.getenv("AUTH_SESSION_COOKIE_SECURE", "true").lower() == "true"
@@ -62,7 +63,7 @@ def is_authenticated() -> bool:
     return st.session_state.get("authenticated", False)
 
 
-def get_user_email() -> str | None:
+def get_user_email() -> Optional[str]:
     return st.session_state.get("user_email")
 
 
@@ -108,9 +109,9 @@ def _encode_session_payload(payload: Dict[str, Any]) -> str:
     return f"{encoded_payload}.{signature}"
 
 
-def _decode_session_cookie(raw_cookie: str) -> Dict[str, Any] | None:
+def _decode_session_token(raw_token: str) -> Optional[Dict[str, Any]]:
     try:
-        encoded_payload, signature = raw_cookie.split(".", 1)
+        encoded_payload, signature = raw_token.split(".", 1)
     except ValueError:
         return None
 
@@ -121,7 +122,7 @@ def _decode_session_cookie(raw_cookie: str) -> Dict[str, Any] | None:
     ).hexdigest()
 
     if not hmac.compare_digest(signature, expected_signature):
-        logger.warning("Auth cookie signature mismatch. Clearing cookie.")
+        logger.warning("Auth token signature mismatch. Clearing persistent session.")
         return None
 
     try:
@@ -131,55 +132,153 @@ def _decode_session_cookie(raw_cookie: str) -> Dict[str, Any] | None:
         return None
 
 
-def _clear_auth_cookie() -> None:
+def _clear_persistent_session() -> None:
     _queue_cookie_update("", 0, emit=True)
-
-
-def _write_auth_cookie(email: str) -> None:
-    payload = {
-        "email": email,
-        "exp": (datetime.now(timezone.utc) + timedelta(seconds=SESSION_TTL_SECONDS)).isoformat(),
-    }
-    token = _encode_session_payload(payload)
-    _queue_cookie_update(token, SESSION_TTL_SECONDS, emit=True)
-
-
-def _hydrate_session_from_cookie() -> None:
     try:
-        cookies = st.context.cookies
+        if SESSION_QUERY_KEY in st.query_params:
+            del st.query_params[SESSION_QUERY_KEY]
+    except Exception:
+        pass
+
+
+def _ensure_query_param(token: str) -> None:
+    try:
+        current = st.query_params[SESSION_QUERY_KEY]
+    except KeyError:
+        try:
+            st.query_params[SESSION_QUERY_KEY] = token
+        except Exception:
+            pass
+        return
     except Exception:
         return
 
+    if current != token:
+        try:
+            st.query_params[SESSION_QUERY_KEY] = token
+        except Exception:
+            pass
+
+
+def _get_request_fingerprint() -> Optional[str]:
     try:
-        raw_cookie = cookies[SESSION_COOKIE_NAME]
-    except KeyError:
+        headers = st.context.headers
+    except Exception:
+        return None
+
+    user_agent = headers.get("user-agent", "")
+    forwarded_for = headers.get("x-forwarded-for", "")
+    remote_addr = headers.get("remote_addr", "")
+    fingerprint_source = f"{user_agent}|{forwarded_for or remote_addr}"
+
+    if not fingerprint_source.strip():
+        return None
+
+    digest = hmac.new(
+        AUTH_COOKIE_SECRET_BYTES,
+        fingerprint_source.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return digest
+
+
+def _save_session_token(token: str, expires_at: datetime, *, with_query_param: bool = False) -> None:
+    remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+    if remaining <= 0:
+        remaining = 1
+    _queue_cookie_update(token, remaining, emit=True)
+    if with_query_param:
+        _ensure_query_param(token)
+
+
+def _persist_session(email: str) -> Tuple[str, datetime]:
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=SESSION_TTL_SECONDS)
+    payload: Dict[str, Any] = {
+        "email": email,
+        "exp": expires_at.isoformat(),
+    }
+
+    fingerprint = _get_request_fingerprint()
+    if fingerprint:
+        payload["fp"] = fingerprint
+
+    token = _encode_session_payload(payload)
+    _save_session_token(token, expires_at, with_query_param=True)
+    return token, expires_at
+
+
+def _get_session_token_from_browser() -> Tuple[Optional[str], Optional[str]]:
+    try:
+        cookies = st.context.cookies
+    except Exception:
+        cookies = None
+
+    if cookies is not None:
+        token = cookies.to_dict().get(SESSION_COOKIE_NAME)
+        if token:
+            return token, "cookie"
+
+    try:
+        if SESSION_QUERY_KEY in st.query_params:
+            return st.query_params[SESSION_QUERY_KEY], "query"
+    except Exception:
+        pass
+
+    return None, None
+
+
+def _hydrate_session_from_token() -> None:
+    token, source = _get_session_token_from_browser()
+    if not token:
         return
 
-    payload = _decode_session_cookie(raw_cookie)
+    payload = _decode_session_token(token)
     if not payload:
-        _clear_auth_cookie()
+        _clear_persistent_session()
         return
 
     email = payload.get("email")
     expires_at = payload.get("exp")
-
     if not email or not expires_at:
-        _clear_auth_cookie()
+        _clear_persistent_session()
         return
 
     try:
         expires_dt = datetime.fromisoformat(expires_at)
     except ValueError:
-        _clear_auth_cookie()
+        _clear_persistent_session()
         return
 
-    if datetime.now(timezone.utc) >= expires_dt:
-        _clear_auth_cookie()
+    now = datetime.now(timezone.utc)
+    if now >= expires_dt:
+        _clear_persistent_session()
+        return
+
+    stored_fp = payload.get("fp")
+    request_fp = _get_request_fingerprint()
+    if stored_fp and request_fp and not hmac.compare_digest(stored_fp, request_fp):
+        logger.warning("Session fingerprint mismatch. Forcing re-authentication.")
+        _clear_persistent_session()
         return
 
     st.session_state.authenticated = True
     st.session_state.user_email = email
-    _write_auth_cookie(email)
+
+    if source != "cookie":
+        remaining = int((expires_dt - now).total_seconds())
+        if remaining <= 0:
+            remaining = 1
+        _queue_cookie_update(token, remaining, emit=True)
+    _ensure_query_param(token)
+
+
+def _clear_oauth_query_params() -> None:
+    for key in ("code", "state", "scope", "authuser", "prompt"):
+        try:
+            if key in st.query_params:
+                del st.query_params[key]
+        except Exception:
+            return
 
 
 def check_authentication() -> None:
@@ -191,7 +290,7 @@ def check_authentication() -> None:
     if "user_email" not in st.session_state:
         st.session_state.user_email = None
 
-    _hydrate_session_from_cookie()
+    _hydrate_session_from_token()
 
     query_params = st.query_params
 
@@ -218,8 +317,8 @@ def check_authentication() -> None:
                     st.session_state.authenticated = True
                     st.session_state.user_email = email
 
-                    st.query_params.clear()
-                    _write_auth_cookie(email)
+                    _persist_session(email)
+                    _clear_oauth_query_params()
                     st.rerun()
                 else:
                     st.error(f"Access denied. Email {email} is not authorized.")
@@ -261,5 +360,5 @@ def add_logout_button() -> None:
             if st.button("Logout"):
                 st.session_state.authenticated = False
                 st.session_state.user_email = None
-                _clear_auth_cookie()
+                _clear_persistent_session()
                 st.rerun()

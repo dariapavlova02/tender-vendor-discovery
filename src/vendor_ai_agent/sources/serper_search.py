@@ -172,7 +172,13 @@ class SerperVendorSource(BaseVendorSource):
         return vendor
 
     
-    def search(self, profile: TenderProfile, target_count: Optional[int] = None) -> List[VendorRecord]:
+    def search(
+        self, 
+        profile: TenderProfile, 
+        target_count: Optional[int] = None,
+        seen_domains: Optional[Set[str]] = None,
+        executed_queries: Optional[Set[str]] = None
+    ) -> List[VendorRecord]:
         if not self.client and self.api_key:
             try:
                 import sys
@@ -198,96 +204,94 @@ class SerperVendorSource(BaseVendorSource):
             self.logger.warning("Serper client not initialized - skipping discovery")
             return []
         
+        if seen_domains is None:
+            seen_domains = set()
+        if executed_queries is None:
+            executed_queries = set()
+        
         self.logger.info(f"\n{'='*60}")
         self.logger.info("SERPER DISCOVERY SOURCE")
         self.logger.info(f"{'='*60}")
         
-        queries = self._generate_queries(profile, target_count)
+        if target_count:
+            self.logger.info(f"Target: {target_count} vendors, Already have: {len(seen_domains)} unique domains")
         
-        effective_query_limit = min(len(queries), self.query_limit) if not target_count else len(queries)
-        
+        base_queries = self._generate_base_queries(profile)
         all_vendors = []
-        seen_domains: Set[str] = set()
         
-        use_places_api = self.config and getattr(self.config.discovery, 'serper_use_places_api', True)
+        all_vendors = self._execute_cascading_search(
+            base_queries, 
+            profile, 
+            seen_domains, 
+            executed_queries
+        )
         
-        location_str = None
-        gl_code = None
+        self.logger.info(f"After base queries: {len(all_vendors)} vendors from {len(executed_queries)} queries")
         
-        if profile.api_metadata and profile.api_metadata.place_of_performance:
-            pop = profile.api_metadata.place_of_performance
+        if not target_count:
+            return all_vendors
+        
+        deficit = target_count - len(seen_domains)
+        if deficit <= 0:
+            self.logger.info(f"Target reached: {len(seen_domains)}/{target_count} vendors")
+            return all_vendors
+        
+        if len(executed_queries) == 0 or len(seen_domains) == 0:
+            self.logger.warning("No successful queries yet, cannot calculate adaptive expansion")
+            return all_vendors
+        
+        avg_unique_per_query = len(seen_domains) / len(executed_queries)
+        queries_needed = int((deficit / avg_unique_per_query) * 1.3)
+        
+        self.logger.info(
+            f"Deficit: {deficit} vendors. "
+            f"Avg efficiency: {avg_unique_per_query:.1f} vendors/query. "
+            f"Need ~{queries_needed} more queries."
+        )
+        
+        SYNONYM_BATCH_SIZE = 5
+        queries_generated = 0
+        
+        for batch_start in range(0, len(base_queries), SYNONYM_BATCH_SIZE):
+            if queries_generated >= queries_needed:
+                self.logger.info("Generated enough queries, stopping synonym expansion")
+                break
             
-            location_parts = []
-            if pop.city:
-                location_parts.append(pop.city)
-            if pop.state_province:
-                location_parts.append(pop.state_province)
-            if pop.country:
-                location_parts.append(pop.country)
+            if len(seen_domains) >= target_count:
+                self.logger.info("Target reached during synonym expansion")
+                break
             
-            if location_parts:
-                location_str = ", ".join(location_parts)
-        
-        if not location_str:
-            if profile.dynamic_context and profile.dynamic_context.country:
-                location_str = profile.dynamic_context.country
-            elif profile.country:
-                location_str = profile.country
-        
-        country_name = None
-        if profile.dynamic_context and profile.dynamic_context.country:
-            country_name = profile.dynamic_context.country
-        elif profile.country:
-            country_name = profile.country
-        elif profile.api_metadata and profile.api_metadata.place_of_performance:
-            country_name = profile.api_metadata.place_of_performance.country
-        
-        if country_name:
-            gl_code = "ca" if "Canada" in country_name else "us"
-        
-        if location_str:
-            self.logger.info(f"Geographic targeting: location='{location_str}', gl='{gl_code}'")
-        
-        for idx, query in enumerate(queries[:effective_query_limit], 1):
-            self.logger.info(f"[Query {idx}/{effective_query_limit}] {query}")
+            batch = base_queries[batch_start:batch_start + SYNONYM_BATCH_SIZE]
+            self.logger.info(f"Expanding synonym batch {batch_start//SYNONYM_BATCH_SIZE + 1}: {len(batch)} queries")
             
-            try:
-                if use_places_api:
-                    response = self.client.places_search(
-                        query, 
-                        num_results=self.results_per_query,
-                        location=location_str,
-                        gl=gl_code
-                    )
-                    results = response.get("places", [])
-                else:
-                    response = self.client.discovery_search(query, num_results=self.results_per_query)
-                    results = response.get("organic", [])
-                
-                self.logger.info(f"  Received {len(results)} results")
-                
-                for position, result in enumerate(results, 1):
-                    if use_places_api:
-                        vendor = self._process_places_result(result, query, position, seen_domains)
-                    else:
-                        vendor = self._process_search_result(result, query, position, seen_domains)
-                    
-                    if vendor:
-                        all_vendors.append(vendor)
-                        self.logger.debug(f"  ✓ Added: {vendor.company_name} ({vendor.filtering_metadata.get('serper_domain', 'N/A')})")
-                
-            except Exception as e:
-                self.logger.error(f"Error processing query '{query}': {e}")
-                continue
+            synonyms = self._expand_with_synonyms(batch, executed_queries)
+            queries_generated += len(synonyms)
+            
+            new_vendors = self._execute_cascading_search(synonyms, profile, seen_domains, executed_queries)
+            all_vendors.extend(new_vendors)
+            
+            self.logger.info(
+                f"After synonym batch: {len(seen_domains)}/{target_count} vendors (+{len(new_vendors)} new)"
+            )
+        
+        if len(seen_domains) < target_count * 0.8:
+            self.logger.info("Synonyms insufficient, trying keyword recombination...")
+            recombined = self._recombine_keywords(base_queries, executed_queries)
+            new_vendors = self._execute_cascading_search(recombined, profile, seen_domains, executed_queries)
+            all_vendors.extend(new_vendors)
+            self.logger.info(
+                f"After recombination: {len(seen_domains)}/{target_count} vendors (+{len(new_vendors)} new)"
+            )
         
         self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"Serper Discovery: {len(all_vendors)} unique vendors from {effective_query_limit} queries")
-        self.logger.info(f"Cost: ~${effective_query_limit * 0.005:.3f}")
+        self.logger.info(f"Serper Discovery Complete: {len(all_vendors)} total vendors, {len(seen_domains)} unique domains")
+        self.logger.info(f"Queries executed: {len(executed_queries)}")
+        self.logger.info(f"Cost: ~${len(executed_queries) * 0.005:.3f}")
         self.logger.info(f"{'='*60}\n")
         
         return all_vendors
     
-    def _generate_queries(self, profile: TenderProfile, target_count: Optional[int] = None) -> List[str]:
+    def _generate_base_queries(self, profile: TenderProfile) -> List[str]:
         contract_type = None
         fulfillment_model = None
         
@@ -379,52 +383,7 @@ class SerperVendorSource(BaseVendorSource):
                 unique_base.append(q)
         
         self.logger.info(f"Generated {len(unique_base)} unique base queries")
-        
-        geo_sequenced_queries = []
-        
-        if self.config and self.config.discovery.serper_geo_query_expansion:
-            
-            city = None
-            region = None
-            country = None
-            
-            if profile.api_metadata and profile.api_metadata.place_of_performance:
-                pop = profile.api_metadata.place_of_performance
-                city = pop.city
-                region = pop.state_province
-                country = pop.country
-            
-            if not country and profile.dynamic_context:
-                country = profile.dynamic_context.country
-            
-            geo_levels = []
-            if city:
-                geo_levels.append(("city", city))
-            if region:
-                geo_levels.append(("region", region))
-            if country:
-                geo_levels.append(("country", country))
-            
-            self.logger.info(f"Geographic expansion: {len(geo_levels)} levels")
-            
-            for level_name, location in geo_levels:
-                for query in unique_base:
-                    geo_sequenced_queries.append(f"{query} {location}")
-                self.logger.debug(f"  Added {len(unique_base)} {level_name} queries")
-            
-            geo_sequenced_queries.extend(unique_base)
-            self.logger.debug(f"  Added {len(unique_base)} global queries")
-            
-            final_queries = geo_sequenced_queries
-        
-        else:
-            final_queries = unique_base
-        
-        if target_count:
-            estimated_queries_needed = min(50, (target_count // 10) + 5)
-            return final_queries[:estimated_queries_needed]
-        
-        return final_queries[:50]
+        return unique_base
     
     def _extract_domain(self, url: str) -> str:
         try:
@@ -480,3 +439,250 @@ class SerperVendorSource(BaseVendorSource):
             return False
 
         return True
+    
+    def _execute_cascading_search(
+        self,
+        base_queries: List[str],
+        profile: TenderProfile,
+        seen_domains: Set[str],
+        executed_queries: Set[str]
+    ) -> List[VendorRecord]:
+        """Execute queries with cascading geographic search."""
+        if not base_queries:
+            return []
+        
+        use_places_api = self.config and getattr(self.config.discovery, 'serper_use_places_api', True)
+        enable_geo_cascade = self.config and self.config.discovery.serper_geo_query_expansion
+        
+        city = None
+        region = None
+        country = None
+        
+        if profile.api_metadata and profile.api_metadata.place_of_performance:
+            pop = profile.api_metadata.place_of_performance
+            city = pop.city
+            region = pop.state_province
+            country = pop.country
+        
+        if not country and profile.dynamic_context:
+            country = profile.dynamic_context.country
+        
+        country_name = None
+        if profile.dynamic_context and profile.dynamic_context.country:
+            country_name = profile.dynamic_context.country
+        elif profile.country:
+            country_name = profile.country
+        elif profile.api_metadata and profile.api_metadata.place_of_performance:
+            country_name = profile.api_metadata.place_of_performance.country
+        
+        gl_code = None
+        if country_name:
+            gl_code = "ca" if "Canada" in country_name else "us"
+        
+        all_vendors = []
+        
+        if enable_geo_cascade and (city or region or country):
+            geo_levels = []
+            if city:
+                geo_levels.append(("city", city))
+            if region:
+                geo_levels.append(("region", region))
+            if country:
+                geo_levels.append(("country", country))
+            geo_levels.append(("global", None))
+            
+            self.logger.info(f"Cascading geo search: {len(geo_levels)} levels for {len(base_queries)} base queries")
+            
+            for level_name, location in geo_levels:
+                level_queries = []
+                for query in base_queries:
+                    if location:
+                        full_query = f"{query} {location}"
+                    else:
+                        full_query = query
+                    
+                    if full_query.lower() not in executed_queries:
+                        level_queries.append(full_query)
+                
+                if not level_queries:
+                    self.logger.debug(f"  {level_name}: no new queries (all already executed)")
+                    continue
+                
+                self.logger.info(f"  {level_name} level: {len(level_queries)} queries")
+                
+                new_vendors = self._execute_query_batch(
+                    level_queries,
+                    location if location else None,
+                    gl_code,
+                    use_places_api,
+                    seen_domains,
+                    executed_queries
+                )
+                
+                all_vendors.extend(new_vendors)
+                self.logger.info(f"    → {len(new_vendors)} new vendors, {len(seen_domains)} unique total")
+        else:
+            all_vendors = self._execute_query_batch(
+                base_queries,
+                None,
+                gl_code,
+                use_places_api,
+                seen_domains,
+                executed_queries
+            )
+        
+        return all_vendors
+    
+    def _execute_query_batch(
+        self,
+        queries: List[str],
+        location: Optional[str],
+        gl_code: Optional[str],
+        use_places_api: bool,
+        seen_domains: Set[str],
+        executed_queries: Set[str]
+    ) -> List[VendorRecord]:
+        """Execute a batch of queries."""
+        vendors = []
+        
+        for query in queries:
+            query_lower = query.lower()
+            if query_lower in executed_queries:
+                continue
+            
+            executed_queries.add(query_lower)
+            
+            try:
+                if use_places_api:
+                    response = self.client.places_search(
+                        query,
+                        num_results=self.results_per_query,
+                        location=location,
+                        gl=gl_code
+                    )
+                    results = response.get("places", [])
+                else:
+                    response = self.client.discovery_search(query, num_results=self.results_per_query)
+                    results = response.get("organic", [])
+                
+                for position, result in enumerate(results, 1):
+                    if use_places_api:
+                        vendor = self._process_places_result(result, query, position, seen_domains)
+                    else:
+                        vendor = self._process_search_result(result, query, position, seen_domains)
+                    
+                    if vendor:
+                        vendors.append(vendor)
+            
+            except Exception as e:
+                self.logger.error(f"Error processing query '{query}': {e}")
+                continue
+        
+        return vendors
+    
+    def _expand_with_synonyms(self, base_queries: List[str], executed_queries: Set[str]) -> List[str]:
+        """Generate synonymous query variations in batches."""
+        if not base_queries:
+            return []
+        
+        import sys
+        from pathlib import Path
+        import importlib.util
+        
+        if not hasattr(self, 'llm_provider') or not self.llm_provider:
+            try:
+                llm_path = Path(__file__).parent.parent / "modules" / "llm_providers.py"
+                spec = importlib.util.spec_from_file_location("llm_providers_module", llm_path)
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    self.llm_provider = module.OpenAIProvider()
+                else:
+                    raise ImportError("Could not load llm_providers.py")
+            except Exception as e:
+                self.logger.warning(f"Could not initialize LLM provider for synonym expansion: {e}")
+                return []
+        
+        all_variations = []
+        
+        prompt = f"""Generate 3 synonymous search query variations for each query below.
+Focus on different word choices while maintaining the same search intent.
+Avoid generic terms like "supplier", "vendor", "manufacturer" alone.
+
+Output as JSON array:
+[
+  {{"original": "query1", "variations": ["var1", "var2", "var3"]}},
+  {{"original": "query2", "variations": ["var1", "var2", "var3"]}}
+]
+
+Queries:
+{chr(10).join(f'{idx+1}. {q}' for idx, q in enumerate(base_queries))}
+"""
+        
+        try:
+            response = self.llm_provider.generate(prompt, response_format="json")
+            import json
+            data = json.loads(response)
+            
+            for item in data:
+                for variation in item.get("variations", []):
+                    var_lower = variation.lower().strip()
+                    if var_lower and var_lower not in executed_queries and len(var_lower) > 10:
+                        if not self._is_toxic_query(variation):
+                            all_variations.append(variation)
+            
+            self.logger.info(f"Generated {len(all_variations)} synonym variations from {len(base_queries)} base queries")
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to expand with synonyms: {e}")
+        
+        return all_variations
+    
+    def _recombine_keywords(self, base_queries: List[str], executed_queries: Set[str]) -> List[str]:
+        """Generate new queries by recombining keywords from existing queries."""
+        if len(base_queries) < 2:
+            return []
+        
+        keywords = set()
+        for query in base_queries:
+            words = query.lower().split()
+            for word in words:
+                if len(word) > 3 and word not in {'the', 'and', 'for', 'with'}:
+                    keywords.add(word)
+        
+        keyword_list = sorted(keywords)
+        recombined = []
+        
+        for i in range(len(keyword_list)):
+            for j in range(i+1, min(i+4, len(keyword_list))):
+                new_query = f"{keyword_list[i]} {keyword_list[j]}"
+                query_lower = new_query.lower()
+                
+                if query_lower not in executed_queries and len(new_query) > 10:
+                    if not self._is_toxic_query(new_query):
+                        recombined.append(new_query)
+                        if len(recombined) >= 20:
+                            break
+            if len(recombined) >= 20:
+                break
+        
+        self.logger.info(f"Generated {len(recombined)} recombined queries from {len(keywords)} unique keywords")
+        return recombined
+    
+    def _is_toxic_query(self, query: str) -> bool:
+        """Check if query contains toxic terms that should be filtered."""
+        query_lower = query.lower()
+        
+        SERVICE_TOXIC_TERMS = {
+            'supplier', 'manufacturer', 'distributor', 'equipment', 'oem',
+            'training', 'consultant', 'saas', 'rental', 'dealer', 'wholesaler',
+            'producer', 'fabricator', 'vendor'
+        }
+        
+        PRODUCT_TOXIC_TERMS = {
+            'services', 'contractor', 'consulting', 'advisory', 'maintenance'
+        }
+        
+        toxic_terms = SERVICE_TOXIC_TERMS | PRODUCT_TOXIC_TERMS
+        
+        return any(toxic in query_lower for toxic in toxic_terms)

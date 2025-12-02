@@ -5,9 +5,12 @@ import io
 import json
 import logging
 import os
+import pickle
 import re
 import sys
+import uuid
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -48,6 +51,9 @@ for handler in logging.root.handlers:
 
 logger = logging.getLogger(__name__)
 
+RUN_CACHE_DIR = Path("outputs/run_cache")
+RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 st.set_page_config(
     page_title="Tender AI Agent Monitor",
     page_icon="🕵️",
@@ -60,6 +66,69 @@ check_authentication()
 st.title("Tender Vendor AI Dashboard")
 st.markdown("Run the discovery pipeline, review extracted data, and export vendor shortlists.")
 add_logout_button()
+
+
+def _persist_artifacts_to_disk(artifacts: PipelineArtifacts) -> dict:
+    """Serialize artifacts to disk and return run metadata."""
+    RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
+    run_file = RUN_CACHE_DIR / f"{run_id}-{uuid.uuid4().hex[:6]}.pkl"
+    with run_file.open("wb") as fh:
+        pickle.dump(artifacts, fh)
+    return {
+        "id": run_id,
+        "path": str(run_file),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _overwrite_cached_run(artifacts: PipelineArtifacts) -> None:
+    """Rewrite the current cached run file with updated artifacts."""
+    run_meta = st.session_state.get("active_run")
+    if not run_meta:
+        run_meta = _persist_artifacts_to_disk(artifacts)
+    else:
+        run_path = Path(run_meta["path"])
+        run_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = run_path.with_suffix(".tmp")
+        with tmp_path.open("wb") as fh:
+            pickle.dump(artifacts, fh)
+        tmp_path.replace(run_path)
+        run_meta["updated_at"] = datetime.utcnow().isoformat()
+    st.session_state["active_run"] = run_meta
+
+
+def _clear_cached_run(delete_file: bool = True) -> None:
+    """Remove cached run metadata and optional file from disk."""
+    run_meta = st.session_state.pop("active_run", None)
+    if delete_file and run_meta:
+        run_path = Path(run_meta.get("path", ""))
+        try:
+            if run_path.exists():
+                run_path.unlink()
+        except OSError as exc:
+            logger.warning("Failed to delete cached run %s: %s", run_path, exc)
+    st.session_state.pop("config", None)
+    st.session_state.pop("apollo_flash", None)
+
+
+def _load_cached_artifacts() -> Optional[PipelineArtifacts]:
+    run_meta = st.session_state.get("active_run")
+    if not run_meta:
+        return None
+
+    run_path = Path(run_meta.get("path", ""))
+    if not run_path.exists():
+        _clear_cached_run(delete_file=False)
+        return None
+
+    try:
+        with run_path.open("rb") as fh:
+            return pickle.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to load cached artifacts %s: %s", run_path, exc)
+        _clear_cached_run(delete_file=False)
+        return None
 
 
 def render_config_sidebar() -> RuntimeConfig:
@@ -609,7 +678,7 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
                 label = f"Fetch emails ({len(missing_email)})"
                 if st.button(label, type="secondary", disabled=not missing_email):
                     manual_service.batch_enrich_apollo(missing_email)
-                    st.session_state['artifacts'] = artifacts
+                    _overwrite_cached_run(artifacts)
                     st.session_state['apollo_flash'] = "Apollo email enrichment completed"
                     try:
                         st.rerun()
@@ -620,7 +689,7 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
                 label = f"Fetch phones ({len(missing_phone)})"
                 if st.button(label, type="secondary", disabled=not missing_phone):
                     manual_service.batch_enrich_apollo(missing_phone)
-                    st.session_state['artifacts'] = artifacts
+                    _overwrite_cached_run(artifacts)
                     st.session_state['apollo_flash'] = "Apollo phone enrichment completed"
                     try:
                         st.rerun()
@@ -652,7 +721,7 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
                         disabled=disabled,
                     ):
                         manual_service.enrich_single_vendor_apollo(vendor)
-                        st.session_state['artifacts'] = artifacts
+                        _overwrite_cached_run(artifacts)
                         st.session_state['apollo_flash'] = f"Apollo contacts refreshed for {vendor.company_name}."
                         try:
                             st.rerun()
@@ -977,15 +1046,14 @@ def main():
     with col2:
         run_button = st.button("🚀 Run Pipeline", type="primary", width="stretch")
 
-    cached_artifacts = st.session_state.get('artifacts')
+    cached_artifacts = _load_cached_artifacts()
     cached_config = st.session_state.get('config') or config
 
     if not run_button:
         if cached_artifacts:
             st.markdown("### 🔁 Last Run Results")
             if st.button("🧹 Clear cached results", type="secondary"):
-                st.session_state.pop('artifacts', None)
-                st.session_state.pop('config', None)
+                _clear_cached_run()
                 st.info("Cached results cleared. Upload documents and click 'Run Pipeline' to start a new analysis.")
                 return
             render_pipeline_results(
@@ -994,7 +1062,10 @@ def main():
                 cached_run=True,
             )
         return
-    
+
+    # New run requested: drop any previous cached run before starting work.
+    _clear_cached_run()
+
     try:
         status_text = st.empty()
         progress_bar = st.progress(0)
@@ -1066,8 +1137,8 @@ def main():
         if config.enable_manual_review:
             st.info("💡 Manual review mode enabled. Check the 'Extracted Data' tab to edit values before re-running.")
 
-        st.session_state['artifacts'] = artifacts
         st.session_state['config'] = config
+        st.session_state['active_run'] = _persist_artifacts_to_disk(artifacts)
 
         render_pipeline_results(
             artifacts,
