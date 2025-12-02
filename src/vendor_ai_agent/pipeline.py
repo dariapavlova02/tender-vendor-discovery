@@ -41,7 +41,8 @@ from .modules import (
 )
 from .modules.enrichment import VendorEnricher
 from .modules.http_client import HttpClientFactory
-from .modules.llm_providers import AsyncOpenAIProvider, OpenAIProvider, WebsiteContentProvider
+from .modules.llm_providers import AsyncOpenAIProvider, OpenAIProvider
+from .enrichment_providers.website_content import WebsiteContentProvider
 
 
 from .sources.sam_entity import SamEntitySource
