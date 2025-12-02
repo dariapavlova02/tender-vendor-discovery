@@ -224,6 +224,7 @@ class AsyncWebsiteScraper:
         self._playwright_instance = None
         self._playwright_lock: Optional[asyncio.Lock] = None
         self._playwright_contexts: Dict[asyncio.AbstractEventLoop, dict] = {}
+        self._playwright_browser = None
     
     def _get_random_headers(self) -> Dict[str, str]:
         """Get randomized browser headers."""
@@ -316,11 +317,23 @@ class AsyncWebsiteScraper:
                 raise
             if self._playwright_instance is None:
                 self._playwright_instance = await async_playwright().start()
-            browser = await self._playwright_instance.chromium.launch(headless=True)
+            if self._playwright_browser is None:
+                self._playwright_browser = await self._playwright_instance.chromium.launch(headless=True)
             semaphore = asyncio.Semaphore(self.playwright_max_contexts)
-            context = {"browser": browser, "semaphore": semaphore}
+            context = {"browser": self._playwright_browser, "semaphore": semaphore}
             self._playwright_contexts[loop] = context
             return context
+
+    async def _setup_playwright_routing(self, context) -> None:
+        block_types = {"image", "media", "font", "stylesheet"}
+
+        async def interceptor(route, request):
+            if request.resource_type in block_types:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await context.route("**/*", interceptor)
 
     async def _fetch_with_playwright(
         self,
@@ -350,6 +363,7 @@ class AsyncWebsiteScraper:
                 user_agent=headers.get("User-Agent"),
                 locale="en-US",
             )
+            await self._setup_playwright_routing(context)
             page = await context.new_page()
             try:
                 await page.goto(
@@ -1018,20 +1032,21 @@ class AsyncWebsiteScraper:
         context_handles = self._playwright_contexts.get(loop)
         
         if context_handles:
-            browser = context_handles.get("browser")
-            if browser:
-                try:
-                    await browser.close()
-                    self.logger.debug("Playwright browser closed successfully")
-                except Exception as e:
-                    self.logger.debug(f"Error closing Playwright browser: {e}")
-            
             del self._playwright_contexts[loop]
-        
-        if self._playwright_instance and not self._playwright_contexts:
+
+        if self._playwright_contexts:
+            return
+
+        if self._playwright_browser:
+            try:
+                await self._playwright_browser.close()
+            except Exception as e:
+                self.logger.debug(f"Error closing Playwright browser: {e}")
+            self._playwright_browser = None
+
+        if self._playwright_instance:
             try:
                 await self._playwright_instance.stop()
-                self._playwright_instance = None
-                self.logger.debug("Playwright instance stopped successfully")
             except Exception as e:
                 self.logger.debug(f"Error stopping Playwright instance: {e}")
+            self._playwright_instance = None

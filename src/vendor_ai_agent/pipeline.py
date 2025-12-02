@@ -208,7 +208,8 @@ class TenderVendorPipeline:
                 enable_batch_quality_gates=cfg.enrichment.enable_batch_quality_gates,
                 enable_sampling_fallback=cfg.enrichment.enable_sampling_fallback,
                 sample_positions=cfg.enrichment.sample_positions,
-                relevance_score_threshold=cfg.enrichment.relevance_score_threshold
+                relevance_score_threshold=cfg.enrichment.relevance_score_threshold,
+                max_concurrent_batches=cfg.enrichment.max_concurrent_batches,
             ),
             vendor_filter=VendorFilter(config=cfg.filtering),
             capability_matcher=CapabilityMatcher(llm_provider=self.llm_provider, config=cfg.capability_matching),

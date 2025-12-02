@@ -16,7 +16,7 @@ import uuid
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -36,8 +36,14 @@ from vendor_ai_agent.config import RuntimeConfig
 from vendor_ai_agent.models import ContactInfo, PipelineArtifacts, TenderSection, VendorMatchResult
 from vendor_ai_agent.modules.document_processing.classifier import DocumentClassifier
 from vendor_ai_agent.modules.manual_enrichment import ManualEnrichmentService
-from vendor_ai_agent.auth import check_authentication, add_logout_button
-from vendor_ai_agent.run_cache import RunCacheLoader
+from vendor_ai_agent.auth import check_authentication, add_logout_button, get_user_email
+from vendor_ai_agent.run_cache import (
+    RunCacheLoader,
+    register_job,
+    update_job,
+    remove_job,
+    get_job_for_email,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +64,22 @@ logger = logging.getLogger(__name__)
 RUN_CACHE_DIR = Path("outputs/run_cache")
 RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 RUN_IDLE_TIMEOUT_SECONDS = int(os.getenv("RUN_CACHE_IDLE_TIMEOUT_SECONDS", "600"))
+
+
+def _current_user_email() -> str:
+    return get_user_email() or "anonymous"
+
+
+def _load_run_config(run_dir: Path) -> Optional[RuntimeConfig]:
+    config_path = run_dir / "config.pkl"
+    if not config_path.exists():
+        return None
+    try:
+        with config_path.open("rb") as fh:
+            return pickle.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to load run config %s: %s", config_path, exc)
+    return None
 
 st.set_page_config(
     page_title="Tender AI Agent Monitor",
@@ -114,24 +136,18 @@ def _matches_to_dataframe(matches: List[VendorMatchResult]) -> pd.DataFrame:
 
 
 def _persist_artifacts_to_disk(artifacts: PipelineArtifacts) -> dict:
-    run_meta = st.session_state.get("active_run")
-    if run_meta:
-        run_path = Path(run_meta.get("path", ""))
-        if run_path.is_dir() and pd is not None:
-            df_final = _matches_to_dataframe(artifacts.final_matches)
-            if not df_final.empty:
-                df_final.to_parquet(run_path / "final_matches.parquet", index=False)
-            df_all = _matches_to_dataframe(artifacts.all_matches or artifacts.final_matches)
-            if not df_all.empty:
-                df_all.to_parquet(run_path / "all_matches.parquet", index=False)
-            run_meta["updated_at"] = datetime.utcnow().isoformat()
-            st.session_state["active_run"] = run_meta
-            return run_meta
-
-    RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
-    run_dir = RUN_CACHE_DIR / f"{run_id}-{uuid.uuid4().hex[:6]}"
+    run_meta = st.session_state.get("active_run") or {}
+    existing_path = run_meta.get("path")
+    if existing_path:
+        run_dir = Path(existing_path)
+    else:
+        run_id = f"run-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        run_dir = RUN_CACHE_DIR / run_id
+        run_meta["id"] = run_id
+        run_meta["job_id"] = run_id
+        run_meta["created_at"] = datetime.utcnow().isoformat()
     run_dir.mkdir(parents=True, exist_ok=True)
+
     df_final = _matches_to_dataframe(artifacts.final_matches)
     if not df_final.empty:
         df_final.to_parquet(run_dir / "final_matches.parquet", index=False)
@@ -144,24 +160,24 @@ def _persist_artifacts_to_disk(artifacts: PipelineArtifacts) -> dict:
         "filtering_metrics": artifacts.filtering_metrics,
         "batch_id": getattr(artifacts, "batch_id", 1),
         "processed_batches": getattr(artifacts, "processed_batches", []),
+        "raw_vendor_count": len(getattr(artifacts, "raw_vendors", []) or []),
+        "enriched_vendor_count": len(getattr(artifacts, "enriched_vendors", []) or []),
+        "final_match_count": len(artifacts.final_matches),
+        "all_match_count": len(artifacts.all_matches or artifacts.final_matches),
     }
     with (run_dir / "metadata.pkl").open("wb") as fh:
         pickle.dump(metadata_payload, fh)
-    meta = {
-        "id": run_id,
-        "path": str(run_dir),
-        "created_at": datetime.utcnow().isoformat(),
-        "last_viewed_at": datetime.utcnow().isoformat(),
-    }
-    st.session_state["active_run"] = meta
-    return meta
+    run_meta["path"] = str(run_dir)
+    run_meta["last_viewed_at"] = datetime.utcnow().isoformat()
+    st.session_state["active_run"] = run_meta
+    return run_meta
 
 
 def _overwrite_cached_run(artifacts: PipelineArtifacts) -> None:
     _persist_artifacts_to_disk(artifacts)
 
 
-def _clear_cached_run(delete_file: bool = True) -> None:
+def _clear_cached_run(delete_file: bool = True, *, job_id: Optional[str] = None) -> None:
     """Remove cached run metadata and optional file from disk."""
     run_meta = st.session_state.pop("active_run", None)
     if delete_file and run_meta:
@@ -173,9 +189,24 @@ def _clear_cached_run(delete_file: bool = True) -> None:
                 shutil.rmtree(run_path, ignore_errors=True)
         except OSError as exc:
             logger.warning("Failed to delete cached run %s: %s", run_path, exc)
+    if job_id is None and run_meta:
+        job_id = run_meta.get("job_id") or run_meta.get("id")
+    if job_id:
+        remove_job(job_id)
     st.session_state.pop("config", None)
     st.session_state.pop("apollo_flash", None)
+    st.session_state.pop("artifacts", None)
     gc.collect()
+
+
+def _archive_active_run() -> None:
+    run_meta = st.session_state.get("active_run")
+    if not run_meta:
+        st.info("No run to archive.")
+        return
+    job_id = run_meta.get("job_id") or run_meta.get("id")
+    _clear_cached_run(job_id=job_id)
+    st.success("Run archived and cache cleared.")
 
 
 def _load_cached_artifacts() -> Optional[PipelineArtifacts]:
@@ -254,6 +285,64 @@ def _materialize_run_artifacts(run_dir: Path) -> PipelineArtifacts:
     artifacts.final_matches = loader.load_final_matches_objects()
     artifacts.all_matches = loader.load_all_matches_objects()
     return artifacts
+
+
+def _render_running_job(job_meta: Dict[str, Any]) -> None:
+    st.subheader("🚧 Pipeline job in progress")
+    started_at = job_meta.get("started_at", "unknown time")
+    st.info(
+        f"Job `{job_meta.get('job_id')}` started at {started_at} is still running. "
+        "This view will show its output when ready."
+    )
+    log_path = Path(job_meta.get("log_path", ""))
+    if log_path.exists():
+        try:
+            log_text = log_path.read_text(encoding="utf-8")
+        except Exception:
+            log_text = ""
+        st.markdown("**Worker log:**")
+        st.code(log_text[-4000:] or "Waiting for log output...", language="text")
+    else:
+        st.info("Log file not yet available.")
+    if st.button("Refresh job status"):
+        st.experimental_rerun()
+    st.stop()
+
+
+def _render_failed_job(job_meta: Dict[str, Any]) -> None:
+    st.subheader("❌ Previous job failed")
+    st.error("The last pipeline run ended with an error. Review the log below or clear the job to try again.")
+    log_path = Path(job_meta.get("log_path", ""))
+    if log_path.exists():
+        st.markdown("**Worker log:**")
+        try:
+            st.code(log_path.read_text(encoding="utf-8")[-4000:], language="text")
+        except Exception:
+            st.code("Unable to read log.")
+    if st.button("🔁 Clear failed job"):
+        _clear_cached_run(job_id=job_meta.get("job_id"))
+        st.experimental_rerun()
+    st.stop()
+
+
+def _sync_session_with_completed_job(job_meta: Dict[str, Any], fallback_config: RuntimeConfig) -> None:
+    run_dir = Path(job_meta.get("run_dir", ""))
+    if not run_dir.exists():
+        return
+    active_meta = st.session_state.get("active_run")
+    if active_meta and active_meta.get("job_id") == job_meta.get("job_id") and st.session_state.get("artifacts"):
+        return
+    artifacts = _materialize_run_artifacts(run_dir)
+    job_config = _load_run_config(run_dir) or fallback_config
+    st.session_state["artifacts"] = artifacts
+    st.session_state["config"] = job_config
+    st.session_state["active_run"] = {
+        "id": job_meta.get("job_id"),
+        "job_id": job_meta.get("job_id"),
+        "path": str(run_dir),
+        "created_at": job_meta.get("started_at"),
+        "last_viewed_at": datetime.utcnow().isoformat(),
+    }
 
 
 def render_config_sidebar() -> RuntimeConfig:
@@ -1080,22 +1169,50 @@ def render_pipeline_results(
             st.info("Excel export available after matches are generated.")
 
     with col_exp3:
-        st.info("Use download buttons or export directly from run cache (Parquet).")
+        if st.button("🗂️ Archive run & clear cache", type="secondary"):
+            _archive_active_run()
+            st.experimental_rerun()
 def main():
     _maybe_cleanup_inactive_run()
     _touch_active_run()
     config = render_config_sidebar()
-    
+    user_email = _current_user_email()
+    active_job_meta = get_job_for_email(user_email)
+
+    if active_job_meta:
+        status = active_job_meta.get("status")
+        if status == "running":
+            _render_running_job(active_job_meta)
+        elif status == "failed":
+            _render_failed_job(active_job_meta)
+        elif status == "completed":
+            _sync_session_with_completed_job(active_job_meta, config)
+
     st.markdown("### 📤 Upload Tender Documents")
-    
+
     uploaded_files = st.file_uploader(
         "Select PDF, DOCX, or Excel files",
         accept_multiple_files=True,
         type=["pdf", "docx", "xlsx", "xls"]
     )
-    
+
     if not uploaded_files:
-        st.info("👆 Upload tender documents to start processing")
+        cached_artifacts = st.session_state.get('artifacts')
+        cached_config = st.session_state.get('config') or config
+        if cached_artifacts:
+            st.markdown("### 🔁 Last Run Results")
+            if st.button("🧹 Clear cached results", type="secondary"):
+                job_id = (active_job_meta or {}).get("job_id")
+                _clear_cached_run(job_id=job_id)
+                st.info("Cached results cleared. Upload documents and click 'Run Pipeline' to start a new analysis.")
+                return
+            render_pipeline_results(
+                cached_artifacts,
+                cached_config,
+                cached_run=True,
+            )
+        else:
+            st.info("👆 Upload tender documents to start processing")
         return
     
     all_file_paths = save_uploaded_files(uploaded_files)
@@ -1142,22 +1259,28 @@ def main():
     cached_artifacts = _load_cached_artifacts()
     cached_config = st.session_state.get('config') or config
 
+    cached_run_active = active_job_meta is not None and active_job_meta.get("status") == "completed"
+
     if not run_button:
         if cached_artifacts:
             st.markdown("### 🔁 Last Run Results")
             if st.button("🧹 Clear cached results", type="secondary"):
-                _clear_cached_run()
+                job_id = (active_job_meta or {}).get("job_id")
+                _clear_cached_run(job_id=job_id)
                 st.info("Cached results cleared. Upload documents and click 'Run Pipeline' to start a new analysis.")
                 return
             render_pipeline_results(
                 cached_artifacts,
                 cached_config,
-                cached_run=True,
+                cached_run=cached_run_active,
             )
         return
 
-    # New run requested: drop any previous cached run before starting work.
-    _clear_cached_run()
+    if active_job_meta and active_job_meta.get("status") == "completed":
+        if st.button("Start new run (current will be archived)"):
+            _archive_active_run()
+            st.experimental_rerun()
+        st.stop()
 
     edited_data = st.session_state.get('edited_extraction')
     worker_payload = {
@@ -1167,10 +1290,24 @@ def main():
         "disable_auto_ingestion": not config.enable_auto_ingestion,
     }
 
-    run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
-    run_dir = RUN_CACHE_DIR / f"{run_id}-{uuid.uuid4().hex[:6]}"
-    if run_dir.exists():
-        shutil.rmtree(run_dir, ignore_errors=True)
+    job_id = f"run-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    run_dir = RUN_CACHE_DIR / job_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config_path = run_dir / "config.pkl"
+    with config_path.open("wb") as fh:
+        pickle.dump(config, fh)
+    log_path = run_dir / "worker.log"
+    job_record = {
+        "job_id": job_id,
+        "email": user_email,
+        "status": "running",
+        "run_dir": str(run_dir),
+        "log_path": str(log_path),
+        "config_path": str(config_path),
+        "started_at": datetime.utcnow().isoformat(),
+        "finished_at": None,
+    }
+    register_job(job_record)
 
     status_text = st.empty()
     log_placeholder = st.empty()
@@ -1200,11 +1337,16 @@ def main():
         )
     except Exception as exc:
         worker_input_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        shutil.rmtree(run_dir, ignore_errors=True)
+        remove_job(job_id)
         st.error(f"Failed to spawn worker: {exc}")
         return
 
     status_text.text("🚀 Pipeline worker running...")
     progress_bar.progress(20)
+
+    log_file = log_path.open("a", encoding="utf-8")
+    LOG_MAX_BYTES = 256 * 1024
 
     try:
         if process.stdout:
@@ -1215,29 +1357,38 @@ def main():
                 last_log_line = cleaned
                 log_placeholder.text(cleaned)
                 print(f"[worker] {cleaned}", flush=True)
+                log_file.write(cleaned + "\n")
+                log_file.flush()
+                if log_file.tell() > LOG_MAX_BYTES:
+                    log_file.seek(log_file.tell() - LOG_MAX_BYTES)
+                    tail = log_file.read()
+                    log_file.seek(0)
+                    log_file.truncate()
+                    log_file.write(tail)
         return_code = process.wait()
     finally:
         worker_input_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        log_file.close()
 
     if return_code != 0:
         progress_bar.empty()
         status_text.empty()
         st.error("🚨 Pipeline worker failed")
         st.error(last_log_line or "Unknown error")
-        if run_dir.exists():
-            shutil.rmtree(run_dir, ignore_errors=True)
+        update_job(job_id, status="failed", finished_at=datetime.utcnow().isoformat())
         return
 
     if not run_dir.exists():
         progress_bar.empty()
         status_text.empty()
         st.error("Pipeline worker finished without producing output.")
+        update_job(job_id, status="failed", finished_at=datetime.utcnow().isoformat())
         return
 
     metadata_path = run_dir / "metadata.pkl"
     if not metadata_path.exists():
         st.error("Worker output missing metadata")
-        shutil.rmtree(run_dir, ignore_errors=True)
+        update_job(job_id, status="failed", finished_at=datetime.utcnow().isoformat())
         return
 
     run_state_path = run_dir / "run_state.pkl"
@@ -1259,13 +1410,15 @@ def main():
     if config.enable_manual_review:
         st.info("💡 Manual review mode enabled. Check the 'Extracted Data' tab to edit values before re-running.")
 
-    timestamp = datetime.utcnow().isoformat()
+    finished_at = datetime.utcnow().isoformat()
+    update_job(job_id, status="completed", finished_at=finished_at)
     st.session_state['config'] = config
     st.session_state['active_run'] = {
-        "id": run_id,
+        "id": job_id,
+        "job_id": job_id,
         "path": str(run_dir),
-        "created_at": timestamp,
-        "last_viewed_at": timestamp,
+        "created_at": job_record["started_at"],
+        "last_viewed_at": finished_at,
     }
     st.session_state.pop('edited_extraction', None)
     artifacts = _materialize_run_artifacts(run_dir)

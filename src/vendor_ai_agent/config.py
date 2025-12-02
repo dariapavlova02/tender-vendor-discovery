@@ -80,6 +80,7 @@ class EnrichmentConfig:
     enable_sampling_fallback: bool = True
     sample_positions: List[int] = field(default_factory=lambda: [150, 300])
     relevance_score_threshold: float = 40.0
+    max_concurrent_batches: int = 2
     enable_website_search: bool = False
     enable_ddg_search: bool = True
     enable_serper_fallback: bool = True

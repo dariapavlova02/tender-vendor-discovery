@@ -11,6 +11,10 @@ import pandas as pd
 
 from vendor_ai_agent.models import ContactInfo, PipelineArtifacts, VendorMatchResult, VendorRecord
 
+RUN_CACHE_DIR = Path("outputs/run_cache")
+RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+JOB_REGISTRY_PATH = RUN_CACHE_DIR / "jobs.json"
+
 
 @dataclass
 class RunCacheLoader:
@@ -144,3 +148,59 @@ class RunCacheLoader:
         tmp = path.with_suffix(".tmp")
         df.to_parquet(tmp, index=False)
         tmp.replace(path)
+
+
+def _load_job_registry() -> Dict[str, Dict[str, Any]]:
+    if not JOB_REGISTRY_PATH.exists():
+        return {}
+    try:
+        data = json.loads(JOB_REGISTRY_PATH.read_text(encoding="utf-8"))
+        return data.get("jobs", {})
+    except Exception:
+        return {}
+
+
+def _save_job_registry(registry: Dict[str, Dict[str, Any]]) -> None:
+    JOB_REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    JOB_REGISTRY_PATH.write_text(json.dumps({"jobs": registry}, indent=2), encoding="utf-8")
+
+
+def register_job(job_meta: Dict[str, Any]) -> Dict[str, Any]:
+    registry = _load_job_registry()
+    registry[job_meta["job_id"]] = job_meta
+    _save_job_registry(registry)
+    return job_meta
+
+
+def update_job(job_id: str, **updates: Any) -> Optional[Dict[str, Any]]:
+    registry = _load_job_registry()
+    job = registry.get(job_id)
+    if not job:
+        return None
+    for key, value in updates.items():
+        if value is not None:
+            job[key] = value
+    _save_job_registry(registry)
+    return job
+
+
+def remove_job(job_id: str) -> Optional[Dict[str, Any]]:
+    registry = _load_job_registry()
+    job = registry.pop(job_id, None)
+    if job is not None:
+        _save_job_registry(registry)
+    return job
+
+
+def get_job_for_email(email: str) -> Optional[Dict[str, Any]]:
+    registry = _load_job_registry()
+    candidates = [job for job in registry.values() if job.get("email") == email]
+    if not candidates:
+        return None
+    for status in ("running", "completed", "failed"):
+        status_candidates = [job for job in candidates if job.get("status") == status]
+        if status_candidates:
+            status_candidates.sort(key=lambda j: j.get("started_at", ""), reverse=True)
+            return status_candidates[0]
+    candidates.sort(key=lambda j: j.get("started_at", ""), reverse=True)
+    return candidates[0]
