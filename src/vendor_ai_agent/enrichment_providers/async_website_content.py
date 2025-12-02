@@ -120,11 +120,15 @@ class AsyncWebsiteContentProvider(BaseEnrichmentProvider):
         
         if self.logger:
             self.logger.info(f"Starting async website content scrape batch: {len(urls_to_scrape)} URLs")
-        results = await self.scraper.scrape_batch(urls_to_scrape)
         
-        for url, result in results.items():
-            for vendor in vendor_by_url.get(url, []):
-                self._apply_scrape_result(vendor, result)
+        try:
+            results = await self.scraper.scrape_batch(urls_to_scrape)
+            
+            for url, result in results.items():
+                for vendor in vendor_by_url.get(url, []):
+                    self._apply_scrape_result(vendor, result)
+        finally:
+            await self.scraper.cleanup()
         
         return vendors
     

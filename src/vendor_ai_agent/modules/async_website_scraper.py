@@ -368,8 +368,14 @@ class AsyncWebsiteScraper:
                 self.logger.debug(f"Playwright fetch failed for {url}: {exc}")
                 return None
             finally:
-                await page.close()
-                await context.close()
+                try:
+                    await page.close()
+                except Exception as e:
+                    self.logger.debug(f"Error closing page: {e}")
+                try:
+                    await context.close()
+                except Exception as e:
+                    self.logger.debug(f"Error closing context: {e}")
     
     async def _ensure_semaphores(self) -> asyncio.Semaphore:
         """Lazy initialization of semaphores in the current event loop."""
@@ -994,3 +1000,30 @@ class AsyncWebsiteScraper:
                 return future.result()
         except RuntimeError:
             return asyncio.run(self.scrape_contacts_batch(website_urls))
+    
+    async def cleanup(self) -> None:
+        """Cleanup Playwright resources gracefully."""
+        if not self.enable_playwright_fallback:
+            return
+        
+        loop = asyncio.get_running_loop()
+        context_handles = self._playwright_contexts.get(loop)
+        
+        if context_handles:
+            browser = context_handles.get("browser")
+            if browser:
+                try:
+                    await browser.close()
+                    self.logger.debug("Playwright browser closed successfully")
+                except Exception as e:
+                    self.logger.debug(f"Error closing Playwright browser: {e}")
+            
+            del self._playwright_contexts[loop]
+        
+        if self._playwright_instance and not self._playwright_contexts:
+            try:
+                await self._playwright_instance.stop()
+                self._playwright_instance = None
+                self.logger.debug("Playwright instance stopped successfully")
+            except Exception as e:
+                self.logger.debug(f"Error stopping Playwright instance: {e}")
