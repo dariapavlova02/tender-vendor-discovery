@@ -1,7 +1,6 @@
 [server]
 maxUploadSize = 500
 maxMessageSize = 500
-enableCORS = false
 enableXsrfProtection = true
 
 [browser]
@@ -10,7 +9,6 @@ gatherUsageStats = false
 [runner]
 magicEnabled = true
 fastReruns = true
-sessionIdleTimeout = 7200000
 
 [client]
 showErrorDetails = true
