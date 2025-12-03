@@ -312,7 +312,8 @@ def _render_running_job(job_meta: Dict[str, Any]) -> None:
     log_path = Path(job_meta.get("log_path", ""))
     if log_path.exists():
         try:
-            log_text = log_path.read_text(encoding="utf-8")
+            with log_path.open("r", encoding="utf-8") as log_file:
+                log_text = log_file.read()
         except Exception:
             log_text = ""
         st.markdown("**Worker log:**")
