@@ -363,12 +363,9 @@ class TenderVendorPipeline:
         
         if use_streaming:
             logging.info("Using streaming pipeline for enrichment + scoring")
-            from .modules.streaming_pipeline import run_streaming_pipeline
-            from .modules.streaming_state import StreamingJobState
-            
-        run_dir = Path(self.context.config.output.base_filename)
-        run_dir.mkdir(parents=True, exist_ok=True)
-            
+            run_dir = Path(self.context.config.output.base_filename)
+            run_dir.mkdir(parents=True, exist_ok=True)
+
             streaming_state = StreamingJobState(
                 run_dir=run_dir,
                 max_queue_size=cfg.enrichment.streaming_max_queue_size,
