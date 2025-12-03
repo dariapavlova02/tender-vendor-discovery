@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+import shutil
+
 import json
 
 import pandas as pd
@@ -204,3 +206,12 @@ def get_job_for_email(email: str) -> Optional[Dict[str, Any]]:
             return status_candidates[0]
     candidates.sort(key=lambda j: j.get("started_at", ""), reverse=True)
     return candidates[0]
+
+
+def clear_all_jobs() -> None:
+    registry = _load_job_registry()
+    for job in registry.values():
+        run_dir = job.get("run_dir")
+        if run_dir:
+            shutil.rmtree(run_dir, ignore_errors=True)
+    JOB_REGISTRY_PATH.unlink(missing_ok=True)

@@ -43,6 +43,7 @@ from vendor_ai_agent.run_cache import (
     update_job,
     remove_job,
     get_job_for_email,
+    clear_all_jobs,
 )
 
 logging.basicConfig(
@@ -207,6 +208,20 @@ def _archive_active_run() -> None:
     job_id = run_meta.get("job_id") or run_meta.get("id")
     _clear_cached_run(job_id=job_id)
     st.success("Run archived and cache cleared.")
+
+
+def _archive_everything() -> None:
+    clear_all_jobs()
+    for path in RUN_CACHE_DIR.iterdir():
+        try:
+            if path.is_file():
+                path.unlink()
+            else:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
+    st.session_state.clear()
+    gc.collect()
 
 
 def _load_cached_artifacts() -> Optional[PipelineArtifacts]:
@@ -1174,6 +1189,9 @@ def render_pipeline_results(
     with col_exp3:
         if st.button("🗂️ Archive run & clear cache", type="secondary"):
             _archive_active_run()
+            st.experimental_rerun()
+        if st.button("❌ Archive ALL runs", type="secondary"):
+            _archive_everything()
             st.experimental_rerun()
 def main():
     _maybe_cleanup_inactive_run()
