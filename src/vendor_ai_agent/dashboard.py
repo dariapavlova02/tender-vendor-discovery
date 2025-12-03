@@ -38,6 +38,7 @@ from vendor_ai_agent.modules.document_processing.classifier import DocumentClass
 from vendor_ai_agent.modules.manual_enrichment import ManualEnrichmentService
 from vendor_ai_agent.auth import check_authentication, add_logout_button, get_user_email
 from vendor_ai_agent.run_cache import (
+    RUN_CACHE_DIR,
     RunCacheLoader,
     register_job,
     update_job,
@@ -45,6 +46,8 @@ from vendor_ai_agent.run_cache import (
     get_job_for_email,
     clear_all_jobs,
 )
+
+RUN_IDLE_TIMEOUT_SECONDS = int(os.getenv("RUN_IDLE_TIMEOUT_SECONDS", "600"))
 
 logging.basicConfig(
     level=logging.INFO,
