@@ -49,22 +49,16 @@ from vendor_ai_agent.run_cache import (
 logging.basicConfig(
     level=logging.INFO,
     format='%(levelname)s:%(name)s:%(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
 )
-for handler in logging.root.handlers:
-    if isinstance(handler, logging.StreamHandler) and hasattr(handler.stream, 'reconfigure'):
-        try:
-            handler.stream.reconfigure(encoding='utf-8', errors='replace')
-        except (AttributeError, TypeError):
-            pass
-
 logger = logging.getLogger(__name__)
 
-RUN_CACHE_DIR = Path("outputs/run_cache")
-RUN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-RUN_IDLE_TIMEOUT_SECONDS = int(os.getenv("RUN_CACHE_IDLE_TIMEOUT_SECONDS", "600"))
+
+def _safe_rerun():
+    """Safely rerun Streamlit app with fallback for older versions."""
+    try:
+        st.rerun()
+    except AttributeError:
+        st.experimental_rerun()
 
 
 def _current_user_email() -> str:
@@ -324,7 +318,7 @@ def _render_running_job(job_meta: Dict[str, Any]) -> None:
         try:
             st.rerun()
         except AttributeError:
-            st.experimental_rerun()
+            _safe_rerun()
     st.stop()
 
 
@@ -340,7 +334,7 @@ def _render_failed_job(job_meta: Dict[str, Any]) -> None:
             st.code("Unable to read log.")
     if st.button("🔁 Clear failed job"):
         _clear_cached_run(job_id=job_meta.get("job_id"))
-        st.experimental_rerun()
+        _safe_rerun()
     st.stop()
 
 
@@ -914,10 +908,7 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
                     manual_service.batch_enrich_apollo(missing_email)
                     _overwrite_cached_run(artifacts)
                     st.session_state['apollo_flash'] = "Apollo email enrichment completed"
-                    try:
-                        st.rerun()
-                    except AttributeError:
-                        st.experimental_rerun()
+                    _safe_rerun()
 
             with bulk_cols[1]:
                 label = f"Fetch phones ({len(missing_phone)})"
@@ -925,10 +916,7 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
                     manual_service.batch_enrich_apollo(missing_phone)
                     _overwrite_cached_run(artifacts)
                     st.session_state['apollo_flash'] = "Apollo phone enrichment completed"
-                    try:
-                        st.rerun()
-                    except AttributeError:
-                        st.experimental_rerun()
+                    _safe_rerun()
 
             st.caption("Click a specific vendor below to refresh only that record.")
             max_rows = min(25, len(artifacts.final_matches))
@@ -957,10 +945,7 @@ def render_vendors_tab(artifacts: PipelineArtifacts, config: Optional[RuntimeCon
                         manual_service.enrich_single_vendor_apollo(vendor)
                         _overwrite_cached_run(artifacts)
                         st.session_state['apollo_flash'] = f"Apollo contacts refreshed for {vendor.company_name}."
-                        try:
-                            st.rerun()
-                        except AttributeError:
-                            st.experimental_rerun()
+                        _safe_rerun()
 
         match_data = []
         for match in artifacts.final_matches[:100]:
@@ -1190,10 +1175,10 @@ def render_pipeline_results(
     with col_exp3:
         if st.button("🗂️ Archive run & clear cache", type="secondary"):
             _archive_active_run()
-            st.experimental_rerun()
+            _safe_rerun()
         if st.button("❌ Archive ALL runs", type="secondary"):
             _archive_everything()
-            st.experimental_rerun()
+            _safe_rerun()
 def main():
     _maybe_cleanup_inactive_run()
     _touch_active_run()
@@ -1214,10 +1199,10 @@ def main():
     with st.expander("Housekeeping", expanded=False):
         if st.button("🗂️ Archive current run", key="archive_current_top"):
             _archive_active_run()
-            st.experimental_rerun()
+            _safe_rerun()
         if st.button("❌ Archive ALL runs", key="archive_all_top"):
             _archive_everything()
-            st.experimental_rerun()
+            _safe_rerun()
 
     uploaded_files = st.file_uploader(
         "Select PDF, DOCX, or Excel files",
@@ -1308,7 +1293,7 @@ def main():
     if active_job_meta and active_job_meta.get("status") == "completed":
         if st.button("Start new run (current will be archived)"):
             _archive_active_run()
-            st.experimental_rerun()
+            _safe_rerun()
         st.stop()
 
     edited_data = st.session_state.get('edited_extraction')
