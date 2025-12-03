@@ -1211,6 +1211,13 @@ def main():
             _sync_session_with_completed_job(active_job_meta, config)
 
     st.markdown("### 📤 Upload Tender Documents")
+    with st.expander("Housekeeping", expanded=False):
+        if st.button("🗂️ Archive current run", key="archive_current_top"):
+            _archive_active_run()
+            st.experimental_rerun()
+        if st.button("❌ Archive ALL runs", key="archive_all_top"):
+            _archive_everything()
+            st.experimental_rerun()
 
     uploaded_files = st.file_uploader(
         "Select PDF, DOCX, or Excel files",
@@ -1382,11 +1389,18 @@ def main():
                 log_file.write(cleaned + "\n")
                 log_file.flush()
                 if log_file.tell() > LOG_MAX_BYTES:
-                    log_file.seek(log_file.tell() - LOG_MAX_BYTES)
-                    tail = log_file.read()
-                    log_file.seek(0)
-                    log_file.truncate()
-                    log_file.write(tail)
+                    log_file.close()
+                    try:
+                        with log_path.open("rb") as rf:
+                            rf.seek(0, 2)
+                            file_size = rf.tell()
+                            rf.seek(max(0, file_size - LOG_MAX_BYTES))
+                            tail = rf.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        tail = ""
+                    with log_path.open("w", encoding="utf-8") as wf:
+                        wf.write(tail)
+                    log_file = log_path.open("a", encoding="utf-8")
         return_code = process.wait()
     finally:
         worker_input_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
