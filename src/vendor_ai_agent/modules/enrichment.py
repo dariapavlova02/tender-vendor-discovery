@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from ..contracts import EnrichmentProvider, VendorEnricherContract
 from ..models import TenderProfile, VendorMatchResult, VendorRecord
@@ -478,7 +479,7 @@ class VendorEnricher(VendorEnricherContract):
         if not vendors:
             return []
         
-        self.logger.debug(f"Enriching {len(vendors)} vendors with two-phase async processing")
+        self.logger.info(f"Enriching {len(vendors)} vendors with two-phase async processing")
         
         batch_providers: List[EnrichmentProvider] = []
         per_vendor_providers: List[EnrichmentProvider] = []
@@ -490,37 +491,35 @@ class VendorEnricher(VendorEnricherContract):
                     supports_batch_fn = getattr(provider, 'supports_batch_enrichment')
                     if supports_batch_fn():
                         batch_providers.append(provider)
+                        self.logger.info(f"  → {provider.name} registered as batch provider")
                         continue
                 except Exception:
                     pass
             per_vendor_providers.append(provider)
-        
-        if batch_providers:
-            self.logger.debug(f"Phase 1: Running {len(batch_providers)} batch providers")
-            for provider in batch_providers:
-                try:
-                    if hasattr(provider, 'enrich_batch_async'):
-                        enrich_batch_fn = getattr(provider, 'enrich_batch_async')
-                        vendors = await enrich_batch_fn(vendors)
-                except Exception as e:
-                    self.logger.error(f"Batch provider {provider.name} failed: {e}")
+            self.logger.info(f"  → {provider.name} registered as per-vendor provider")
         
         if per_vendor_providers:
-            self.logger.debug(f"Phase 2: Running {len(per_vendor_providers)} per-vendor providers in parallel")
+            phase1_start = time.time()
+            self.logger.info(f"Phase 1: Running {len(per_vendor_providers)} per-vendor providers on {len(vendors)} vendors")
 
             concurrency = max(1, self.max_workers)
             semaphore = asyncio.Semaphore(concurrency)
 
             async def enrich_vendor_async(vendor: VendorRecord) -> VendorRecord:
+                vendor_start = time.time()
                 async with semaphore:
                     try:
                         for provider in per_vendor_providers:
+                            provider_start = time.time()
                             if hasattr(provider, 'enrich_async'):
                                 enrich_fn = getattr(provider, 'enrich_async')
                                 vendor = await enrich_fn(vendor)
                             else:
-                                # Run sync provider in thread pool to avoid blocking event loop
                                 vendor = await asyncio.to_thread(provider.enrich, vendor)
+                            provider_elapsed = time.time() - provider_start
+                            self.logger.debug(f"  {provider.name} for {vendor.company_name}: {provider_elapsed:.2f}s")
+                        vendor_elapsed = time.time() - vendor_start
+                        self.logger.debug(f"Vendor {vendor.company_name} enriched in {vendor_elapsed:.2f}s")
                         return vendor
                     except Exception as e:
                         self.logger.error(f"Error enriching {vendor.company_name}: {e}")
@@ -529,6 +528,36 @@ class VendorEnricher(VendorEnricherContract):
             vendors = list(
                 await asyncio.gather(*[enrich_vendor_async(v) for v in vendors])
             )
+            phase1_elapsed = time.time() - phase1_start
+            self.logger.info(f"Phase 1 complete: {len(per_vendor_providers)} per-vendor providers finished in {phase1_elapsed:.1f}s")
+
+        if batch_providers:
+            phase2_start = time.time()
+            self.logger.info(f"Phase 2: Running {len(batch_providers)} batch providers in parallel")
+            
+            async def run_batch_provider(provider, vendors_input):
+                provider_start = time.time()
+                try:
+                    if hasattr(provider, 'enrich_batch_async'):
+                        result = await provider.enrich_batch_async(vendors_input)
+                        provider_elapsed = time.time() - provider_start
+                        self.logger.info(f"  ✓ {provider.name} completed in {provider_elapsed:.1f}s")
+                        return result
+                    else:
+                        self.logger.warning(f"{provider.name} claims batch support but missing enrich_batch_async()")
+                        return vendors_input
+                except Exception as e:
+                    self.logger.error(f"Batch provider {provider.name} failed: {e}")
+                    return vendors_input
+            
+            results = await asyncio.gather(*[run_batch_provider(p, vendors) for p in batch_providers])
+            
+            for result in results:
+                if result is not None:
+                    vendors = result
+            
+            phase2_elapsed = time.time() - phase2_start
+            self.logger.info(f"Phase 2 complete: {len(batch_providers)} batch providers finished in {phase2_elapsed:.1f}s")
 
         return vendors
 

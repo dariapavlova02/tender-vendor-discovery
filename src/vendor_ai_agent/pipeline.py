@@ -42,6 +42,8 @@ from .modules import (
 from .modules.enrichment import VendorEnricher
 from .modules.http_client import HttpClientFactory
 from .modules.llm_providers import AsyncOpenAIProvider, OpenAIProvider
+from .modules.streaming_pipeline import run_streaming_pipeline
+from .modules.streaming_state import StreamingJobState
 from .enrichment_providers.website_content import WebsiteContentProvider
 
 
@@ -353,7 +355,83 @@ class TenderVendorPipeline:
             and isinstance(self.llm_provider, AsyncOpenAIProvider)
         )
         
-        if use_async:
+        use_streaming = (
+            cfg.enrichment.enable_streaming_pipeline
+            and use_async
+            and len(batch_vendors) >= cfg.enrichment.streaming_batch_size
+        )
+        
+        if use_streaming:
+            logging.info("Using streaming pipeline for enrichment + scoring")
+            from .modules.streaming_pipeline import run_streaming_pipeline
+            from .modules.streaming_state import StreamingJobState
+            
+        run_dir = Path(self.context.config.output.base_filename)
+        run_dir.mkdir(parents=True, exist_ok=True)
+            
+            streaming_state = StreamingJobState(
+                run_dir=run_dir,
+                max_queue_size=cfg.enrichment.streaming_max_queue_size,
+                max_concurrent_batches=cfg.enrichment.max_concurrent_batches,
+            )
+            
+            try:
+                try:
+                    loop = asyncio.get_running_loop()
+                    summary = loop.run_until_complete(
+                        run_streaming_pipeline(
+                            profile=tender_profile,
+                            vendors=batch_vendors,
+                            state=streaming_state,
+                            enricher_enrich_async=self.context.vendor_enricher._enrich_all_parallel_async,
+                            scorer_score_async=self.context.capability_matcher.score_async,
+                            batch_size=cfg.enrichment.streaming_batch_size,
+                            relevance_threshold=cfg.enrichment.relevance_score_threshold,
+                        )
+                    )
+                except RuntimeError:
+                    summary = asyncio.run(
+                        run_streaming_pipeline(
+                            profile=tender_profile,
+                            vendors=batch_vendors,
+                            state=streaming_state,
+                            enricher_enrich_async=self.context.vendor_enricher._enrich_all_parallel_async,
+                            scorer_score_async=self.context.capability_matcher.score_async,
+                            batch_size=cfg.enrichment.streaming_batch_size,
+                            relevance_threshold=cfg.enrichment.relevance_score_threshold,
+                        )
+                    )
+                
+                logging.info(f"Streaming pipeline summary: {summary}")
+                
+                import pyarrow.parquet as pq
+                output_path = run_dir / "all_matches.parquet"
+
+                if output_path.exists():
+                    table = pq.read_table(output_path)
+                    all_scored_matches = self._parquet_to_matches(table)
+                    enriched_vendors = [m.vendor for m in all_scored_matches]
+                    relevant_matches = [
+                        m for m in all_scored_matches
+                        if m.capability_match_score >= cfg.enrichment.relevance_score_threshold
+                    ]
+                    matches = relevant_matches if relevant_matches else all_scored_matches
+                    logging.info(
+                        f"Loaded {len(all_scored_matches)} matches from streaming pipeline "
+                        f"({len(relevant_matches)} relevant)"
+                    )
+                    try:
+                        output_path.unlink()
+                    except OSError:
+                        pass
+                else:
+                    logging.warning("Streaming pipeline did not produce output file, falling back to async")
+                    use_streaming = False
+            except Exception as exc:
+                logging.warning(f"Streaming pipeline failed: {exc}", exc_info=True)
+                use_streaming = False
+        
+        if not use_streaming and use_async:
             logging.info("Using async pipeline for enrichment + scoring")
             try:
                 try:
@@ -450,15 +528,21 @@ class TenderVendorPipeline:
         """Cleanup pipeline resources."""
         try:
             loop = asyncio.get_running_loop()
-            if loop.is_running():
-                # If loop is running, schedule cleanup
-                loop.create_task(HttpClientFactory.close())
-            else:
-                # If loop is closed/not running, run synchronously
-                loop.run_until_complete(HttpClientFactory.close())
         except RuntimeError:
-            # No event loop
-            asyncio.run(HttpClientFactory.close())
+            loop = None
+
+        try:
+            if loop and loop.is_running():
+                loop.create_task(HttpClientFactory.close())
+            elif loop:
+                loop.run_until_complete(HttpClientFactory.close())
+            else:
+                asyncio.run(HttpClientFactory.close())
+        except RuntimeError:
+            try:
+                asyncio.run(HttpClientFactory.close())
+            except Exception as exc:
+                logging.warning(f"Error cleaning up pipeline resources: {exc}")
         except Exception as e:
             logging.warning(f"Error cleaning up pipeline resources: {e}")
 
@@ -748,6 +832,57 @@ class TenderVendorPipeline:
             vendor.filtering_metadata["match_status"] = status
             vendor.filtering_metadata["match_reason"] = reason
             vendor.filtering_metadata.setdefault("batch", batch_id)
+
+    def _parquet_to_matches(self, table) -> List[VendorMatchResult]:
+        """Convert PyArrow table from streaming pipeline back to VendorMatchResult objects."""
+        import json
+        matches = []
+        
+        for i in range(len(table)):
+            row = {col: table[col][i].as_py() for col in table.column_names}
+            
+            primary_contact = None
+            if row.get("primary_contact_name") or row.get("primary_contact_email"):
+                primary_contact = ContactInfo(
+                    name=row.get("primary_contact_name"),
+                    email=row.get("primary_contact_email"),
+                    phone=row.get("primary_contact_phone"),
+                )
+            
+            vendor = VendorRecord(
+                company_name=row["company_name"],
+                website=row.get("website"),
+                email=row.get("email"),
+                phone=row.get("phone"),
+                location=row.get("location"),
+                city=row.get("city"),
+                state=row.get("state"),
+                country=row.get("country"),
+                industry=row.get("industry"),
+                source=row.get("source"),
+                is_past_winner=row.get("is_past_winner", False),
+                enrichment_flags=json.loads(row.get("enrichment_flags") or "[]"),
+                uei=row.get("uei"),
+                duns=row.get("duns"),
+                cage_code=row.get("cage_code"),
+                business_types=json.loads(row.get("business_types") or "[]"),
+                primary_contact=primary_contact,
+                geo_score=row.get("geo_score"),
+                preliminary_score=row.get("preliminary_score"),
+                filtering_metadata=json.loads(row.get("filtering_metadata") or "{}"),
+                total_contract_value=row.get("total_contract_value"),
+                contract_count=row.get("contract_count"),
+            )
+            
+            match = VendorMatchResult(
+                vendor=vendor,
+                capability_match_score=row["capability_match_score"],
+                rationale=row.get("rationale"),
+                references=json.loads(row.get("references") or "[]"),
+            )
+            matches.append(match)
+        
+        return matches
 
     def _select_batch_vendors(
         self,

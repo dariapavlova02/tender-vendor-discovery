@@ -145,6 +145,7 @@ def run_pipeline_job(input_path: Path, output_dir: Path) -> None:
     disable_auto_ingestion = payload.get("disable_auto_ingestion", False)
 
     logger.info("Starting worker run for %d documents", len(file_paths))
+    config.output.base_filename = str(output_dir)
     pipeline = TenderVendorPipeline(config)
     artifacts = pipeline.run(file_paths, disable_auto_ingestion=disable_auto_ingestion)
 

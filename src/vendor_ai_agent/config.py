@@ -71,8 +71,8 @@ class EnrichmentConfig:
     enable_apollo_enrichment: bool = True
     enable_manual_enrichment: bool = True
     auto_enrich_on_missing: bool = False
-    max_enrichment_workers: int = 30  # Optimized: 3x increase for parallel enrichment
-    batch_size: int = 100  # Optimized: 2x increase for better throughput
+    max_enrichment_workers: int = 30
+    batch_size: int = 100
     min_batch_success_rate: float = 0.15
     max_enrichment_batches: int = 5
     target_relevant_vendors: int = 200
@@ -96,6 +96,9 @@ class EnrichmentConfig:
     smart_email_max_candidates: int = 3
     smart_email_require_company_context: bool = True
     smart_email_min_confidence: float = 0.6
+    enable_streaming_pipeline: bool = True
+    streaming_max_queue_size: int = 5
+    streaming_batch_size: int = 50
 
 
 @dataclass

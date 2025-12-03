@@ -1,0 +1,52 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.10.11, pytest-8.4.2, pluggy-1.6.0 -- /Users/dariapavlova/Documents/vendor_ai_agent/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/dariapavlova/Documents/vendor_ai_agent
+configfile: pyproject.toml
+plugins: anyio-4.11.0, asyncio-1.3.0
+asyncio: mode=auto, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/test_async_enrichment_performance.py::test_batch_enrichment_performance 
+======================================================================
+Testing async enrichment with 10 vendors
+======================================================================
+
+✓ Contact scraping enabled
+
+──────────────────────────────────────────────────────────────────────
+Phase 1: Batch providers (website content, contact scraping)
+Phase 2: Per-vendor providers (running in parallel)
+──────────────────────────────────────────────────────────────────────
+
+
+======================================================================
+RESULTS
+======================================================================
+Total vendors:           10
+Total duration:          58.61s
+Average per vendor:      5.86s
+======================================================================
+
+✓ Vendors with content:  10/10
+✓ Vendors with contacts: 4/10
+
+──────────────────────────────────────────────────────────────────────
+Sample enriched vendor:
+──────────────────────────────────────────────────────────────────────
+Company:    Test Vendor 0
+Website:    https://www.example.com
+Email:      N/A
+Phone:      N/A
+Content:    142 chars
+Status:     success
+──────────────────────────────────────────────────────────────────────
+
+✅ Performance test PASSED (duration: 58.61s < 60.0s)
+
+PASSED
+tests/test_async_enrichment_performance.py::test_batch_provider_detection ✓ AsyncWebsiteContentProvider supports batch enrichment
+✓ ContactScrapingProvider supports batch enrichment
+PASSED
+
+========================= 2 passed in 60.26s (0:01:00) =========================

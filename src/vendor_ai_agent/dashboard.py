@@ -305,7 +305,10 @@ def _render_running_job(job_meta: Dict[str, Any]) -> None:
     else:
         st.info("Log file not yet available.")
     if st.button("Refresh job status"):
-        st.experimental_rerun()
+        try:
+            st.rerun()
+        except AttributeError:
+            st.experimental_rerun()
     st.stop()
 
 
