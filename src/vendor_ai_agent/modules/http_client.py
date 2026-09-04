@@ -27,7 +27,7 @@ class HttpClientFactory:
                         timeout=30.0,
                         follow_redirects=True,
                         http2=True,  # Enable HTTP/2
-                        verify=False,  # Skip SSL verification for scraping (optional)
+                        verify=True,
                         limits=httpx.Limits(
                             max_connections=100,      # Max total connections
                             max_keepalive_connections=50,  # Max idle connections to keep

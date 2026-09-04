@@ -25,13 +25,13 @@ def init_db(database_url: str | None = None) -> None:
     if database_url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}
     
+    pool_options = {} if database_url.startswith("sqlite") else {"pool_size": 10, "max_overflow": 20}
     _engine = create_engine(
         database_url,
         pool_pre_ping=True,
-        pool_size=10 if not database_url.startswith("sqlite") else 0,
-        max_overflow=20 if not database_url.startswith("sqlite") else 0,
         echo=os.getenv("SQL_ECHO", "false").lower() == "true",
-        connect_args=connect_args
+        connect_args=connect_args,
+        **pool_options,
     )
     
     _SessionLocal = sessionmaker(

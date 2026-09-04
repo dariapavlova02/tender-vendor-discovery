@@ -4,11 +4,13 @@ from pathlib import Path
 from typing import Optional
 import logging
 import csv
+import hashlib
+import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..database.models import Vendor, VendorGSIN, VendorUNSPSC, VendorContact
+from ..database.models import IngestionChunk, Vendor, VendorGSIN, VendorUNSPSC, VendorContact
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class CanadaContractsLoader:
             "gsin_codes_added": 0,
             "unspsc_codes_added": 0,
             "contacts_added": 0,
+            "rows_skipped": 0,
         }
     
     def load_csv(self, csv_path: Path, source_name: str = "canada_contracts") -> dict:
@@ -60,6 +63,7 @@ class CanadaContractsLoader:
                         except Exception as e:
                             logger.error(f"Error processing chunk {chunk_num}: {e}")
                             self.session.rollback()
+                            raise
                         
                         chunk = []
                 
@@ -76,15 +80,26 @@ class CanadaContractsLoader:
                     except Exception as e:
                         logger.error(f"Error processing final chunk {chunk_num}: {e}")
                         self.session.rollback()
+                        raise
                         
         except Exception as e:
-            logger.error(f"Failed to open CSV: {e}")
+            logger.error(f"Failed to import CSV: {e}")
             raise
         
         logger.info(f"Completed loading: {self.stats}")
         return self.stats
     
     def _process_chunk(self, chunk: list, source_name: str):
+        digest = hashlib.sha256(
+            json.dumps(chunk, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        completed = self.session.scalar(select(IngestionChunk.id).where(
+            IngestionChunk.source == source_name, IngestionChunk.digest == digest
+        ))
+        if completed is not None:
+            self.stats["rows_skipped"] += len(chunk)
+            return
+        self.session.add(IngestionChunk(source=source_name, digest=digest))
         vendor_aggregates = self._aggregate_by_vendor(chunk)
         
         if not vendor_aggregates:

@@ -1,4 +1,4 @@
-"""Streamlit Dashboard for Tender AI Agent Observability."""
+"""Streamlit Dashboard for Tender Vendor Discovery Observability."""
 from __future__ import annotations
 
 import gc
@@ -80,7 +80,7 @@ def _load_run_config(run_dir: Path) -> Optional[RuntimeConfig]:
     return None
 
 st.set_page_config(
-    page_title="Tender AI Agent Monitor",
+    page_title="Tender Vendor Discovery Monitor",
     page_icon="🕵️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -623,18 +623,12 @@ def select_documents_for_processing(files: List[Path]) -> tuple[List[Path], dict
 
 
 def save_uploaded_files(uploaded_files) -> List[Path]:
-    temp_dir = Path("data/temp_upload")
-    temp_dir.mkdir(exist_ok=True)
-    
+    from vendor_ai_agent.file_storage import save_uploads
     file_paths = []
-    for uploaded_file in uploaded_files:
-        path = temp_dir / uploaded_file.name
-        with open(path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
+    for path in save_uploads(uploaded_files, Path("data/temp_upload")):
         if path.suffix.lower() == '.zip':
             logger.info("Extracting ZIP archive: %s", path.name)
-            extracted = extract_zip(path, temp_dir)
+            extracted = extract_zip(path, path.parent)
             file_paths.extend(extracted)
             logger.info("Extracted %d files from %s", len(extracted), path.name)
         else:

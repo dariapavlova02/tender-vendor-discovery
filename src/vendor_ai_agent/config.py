@@ -33,7 +33,8 @@ class LLMConfig:
 @dataclass
 class DiscoveryConfig:
     target_results: int = 1000
-    preferred_sources: List[str] = field(default_factory=lambda: ["static_directory"])
+    preferred_sources: List[str] = field(default_factory=list)
+    enable_static_demo_source: bool = False
     enable_apollo_discovery: bool = False
     enable_apollo_booster: bool = False
     apollo_min_candidates: int = 200
@@ -159,7 +160,7 @@ class CanadaOpenDataConfig:
 class DatabaseConfig:
     url: str = field(default_factory=lambda: os.getenv(
         "DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5432/vendor_ai"
+        "sqlite:///vendor_ai.db"
     ))
     pool_size: int = 10
     max_overflow: int = 20

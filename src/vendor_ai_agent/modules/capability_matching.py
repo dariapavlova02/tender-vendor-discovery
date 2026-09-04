@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from typing import Iterable, List, Optional
 
 from ..config import CapabilityMatchingConfig
@@ -216,7 +217,10 @@ Return JSON:
             )
             
             data = json.loads(response)
-            score = float(data.get("score", 50))
+            score = float(data["score"])
+            if not math.isfinite(score):
+                raise ValueError("Capability score must be finite")
+            vendor.filtering_metadata["scoring_method"] = "llm"
             rationale = data.get("rationale", f"{vendor.company_name} - LLM assessment")
             
             score = max(0.0, min(100.0, score))
@@ -235,6 +239,7 @@ Return JSON:
             raise
     
     def _rule_based_score(self, profile: TenderProfile, vendor: VendorRecord) -> VendorMatchResult:
+        vendor.filtering_metadata["scoring_method"] = "rule_based"
         project_type = profile.doc_extracted.structured.project_type if profile.doc_extracted else None
         
         score = self._calculate_score(vendor)
@@ -335,7 +340,10 @@ Return JSON:
             )
             
             data = json.loads(response)
-            score = float(data.get("score", 50))
+            score = float(data["score"])
+            if not math.isfinite(score):
+                raise ValueError("Capability score must be finite")
+            vendor.filtering_metadata["scoring_method"] = "llm"
             rationale = data.get("rationale", f"{vendor.company_name} - LLM assessment")
             
             score = max(0.0, min(100.0, score))

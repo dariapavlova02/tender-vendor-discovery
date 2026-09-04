@@ -149,6 +149,7 @@ class VendorEnricher(VendorEnricherContract):
             all_relevant_results.extend([
                 r for r in batch_result.scored_results
                 if r.capability_match_score >= self.relevance_score_threshold
+                and r.vendor.filtering_metadata.get("scoring_method") != "rule_based"
             ])
             total_enriched += len(batch_result.enriched_vendors)
             
@@ -194,6 +195,7 @@ class VendorEnricher(VendorEnricherContract):
             relevant = [
                 r for r in all_scored
                 if r.capability_match_score >= self.relevance_score_threshold
+                and r.vendor.filtering_metadata.get("scoring_method") != "rule_based"
             ]
             return enriched, relevant, all_scored
 
@@ -378,6 +380,7 @@ class VendorEnricher(VendorEnricherContract):
         relevant = [
             r for r in scored_batch 
             if r.capability_match_score >= self.relevance_score_threshold
+            and r.vendor.filtering_metadata.get("scoring_method") != "rule_based"
         ]
         
         success_base = len(content_ready)
@@ -612,6 +615,7 @@ class VendorEnricher(VendorEnricherContract):
         relevant = [
             r for r in scored_batch
             if r.capability_match_score >= self.relevance_score_threshold
+            and r.vendor.filtering_metadata.get("scoring_method") != "rule_based"
         ]
 
         return {

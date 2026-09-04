@@ -1,4 +1,4 @@
-"""Tender Vendor AI Agent package."""
+"""Tender Vendor Discovery package."""
 
 __all__ = [
     "config",

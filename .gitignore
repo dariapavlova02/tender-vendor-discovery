@@ -21,3 +21,16 @@ data/test_case/**/*
 *.db.*
 *.sqlite
 *.sqlite3
+
+# Local runs and build products
+*.log
+*.pkl
+*.backup
+.pytest_cache/
+.cache/
+dist/
+build/
+*.egg-info/
+.env.*
+!.env.example
+tender_vendors/

@@ -1,4 +1,4 @@
-"""Static vendor source placeholder for MVP wiring."""
+"""Explicitly fictional vendor source for local adapter experiments."""
 from __future__ import annotations
 
 from typing import List

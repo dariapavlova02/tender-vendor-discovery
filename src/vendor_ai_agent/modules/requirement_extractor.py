@@ -33,11 +33,7 @@ class RequirementExtractor(RequirementExtractorContract):
     def extract(
         self, sections: List[TenderSection], base_profile: Optional[TenderProfile] = None
     ) -> TenderProfile:
-        """Return a skeletal TenderProfile from provided sections.
-
-        Real implementation will call GPT models with carefully engineered
-        prompts and post-process outputs.
-        """
+        """Build a tender profile from parsed sections and configured extraction providers."""
 
         combined_scope = "\n\n".join(section.content for section in sections)
         doc_sections = SectionExtractor().extract(sections)

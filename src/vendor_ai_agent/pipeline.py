@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, asdict
@@ -131,10 +132,8 @@ class TenderVendorPipeline:
             except Exception as exc:
                 logging.warning("Failed to initialize Serper discovery source: %s", exc)
 
-        # Always register the static directory as a resilience fallback so tests and
-        # offline environments still yield candidate vendors.
-        sources.append(StaticDirectorySource())
-        logging.debug("StaticDirectorySource registered as fallback vendor provider")
+        if cfg.discovery.enable_static_demo_source:
+            sources.append(StaticDirectorySource())
         
         # Initialize enrichment providers
         enrichment_providers = []
@@ -299,7 +298,7 @@ class TenderVendorPipeline:
                 tender_profile, discovered_vendors
             )
 
-            if not discovered_vendors:
+            if not discovered_vendors and cfg.discovery.enable_static_demo_source:
                 logging.warning(
                     "Vendor discovery returned no candidates; generating fallback directory vendors"
                 )
@@ -316,6 +315,9 @@ class TenderVendorPipeline:
             filtered_vendors = self._ensure_min_candidates_after_filter(
                 tender_profile, filtered_vendors
             )
+            # Every candidate, including late additions, must pass the same checks.
+            filtered_vendors = self.context.vendor_filter.filter(tender_profile, filtered_vendors)
+            filtering_metrics = self.context.vendor_filter.get_metrics()
 
             if use_cache:
                 self._write_vendor_cache(tender_profile, filtered_vendors)
@@ -411,8 +413,9 @@ class TenderVendorPipeline:
                     relevant_matches = [
                         m for m in all_scored_matches
                         if m.capability_match_score >= cfg.enrichment.relevance_score_threshold
+                        and m.vendor.filtering_metadata.get("scoring_method") != "rule_based"
                     ]
-                    matches = relevant_matches if relevant_matches else all_scored_matches
+                    matches = relevant_matches
                     logging.info(
                         f"Loaded {len(all_scored_matches)} matches from streaming pipeline "
                         f"({len(relevant_matches)} relevant)"
@@ -458,9 +461,7 @@ class TenderVendorPipeline:
                             scoring_fn_async=self.context.capability_matcher.score_async,
                         )
                     )
-                matches = (
-                    relevant_matches if relevant_matches else all_scored_matches
-                )
+                matches = relevant_matches
             except Exception as exc:
                 logging.warning(f"Async pipeline failed, falling back to sync: {exc}")
                 use_async = False
@@ -476,9 +477,7 @@ class TenderVendorPipeline:
                     vendors=batch_vendors,
                     scoring_fn=self.context.capability_matcher.score,
                 )
-                matches = (
-                    relevant_matches if relevant_matches else all_scored_matches
-                )
+                matches = relevant_matches
             else:
                 enriched_vendors = self.context.vendor_enricher.enrich(batch_vendors)
                 all_scored_matches = self.context.capability_matcher.score(
@@ -491,6 +490,10 @@ class TenderVendorPipeline:
             threshold=self.context.vendor_enricher.relevance_score_threshold,
             batch_id=batch_info["batch_id"],
         )
+        matches = [
+            match for match in all_scored_matches
+            if match.vendor.filtering_metadata.get("match_status") == "selected"
+        ]
 
         self._log_enrichment_metrics(enriched_vendors)
         self._log_matching_metrics(self.context.capability_matcher)
@@ -811,7 +814,10 @@ class TenderVendorPipeline:
             vendor = match.vendor
             status: str
             reason: str
-            if match.capability_match_score >= threshold:
+            if vendor.filtering_metadata.get("scoring_method") == "rule_based":
+                status = "needs_review"
+                reason = "Heuristic ranking only; capability assessment unavailable"
+            elif match.capability_match_score >= threshold:
                 status = "selected"
                 reason = f"Meets score threshold ({match.capability_match_score:.1f})"
             else:
@@ -965,14 +971,16 @@ class TenderVendorPipeline:
         return cache_dir / f"{key}_vendors.json"
 
     def _cache_key(self, profile: TenderProfile) -> str:
-        if profile.tender_id:
-            return profile.tender_id.replace("/", "-")
-        reference = (
-            profile.doc_extracted.structured.reference_number
-            if profile.doc_extracted
-            else None
-        )
-        return (reference or "manual").replace("/", "-")
+        discovery = asdict(self.context.config.discovery)
+        discovery.pop("processing_batch", None)
+        payload = {
+            "version": 2,
+            "profile": asdict(profile),
+            "discovery": discovery,
+            "filtering": asdict(self.context.config.filtering),
+        }
+        encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()[:24]
 
     def _vendor_from_dict(self, payload: dict) -> VendorRecord:
         contact_data = payload.get("primary_contact")

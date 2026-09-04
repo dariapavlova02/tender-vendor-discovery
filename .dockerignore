@@ -53,6 +53,4 @@ scripts/debug/
 
 .git/
 .gitignore
-README.md
-*.md
 docs/

@@ -6,17 +6,20 @@ from sqlalchemy import pool
 
 from alembic import context
 
-from src.vendor_ai_agent.database.models import Base
+from dotenv import load_dotenv
+from vendor_ai_agent.database.models import Base
+
+load_dotenv()
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-if config.get_main_option("sqlalchemy.url") is None:
+if os.getenv("DATABASE_URL"):
     config.set_main_option(
         "sqlalchemy.url",
-        os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/vendor_ai")
+        os.environ["DATABASE_URL"].replace("%", "%%")
     )
 
 target_metadata = Base.metadata

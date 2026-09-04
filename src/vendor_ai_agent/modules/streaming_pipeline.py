@@ -132,6 +132,7 @@ async def enrichment_consumer(
             relevant_matches = [
                 r for r in scored_batch
                 if r.capability_match_score >= relevance_threshold
+                and r.vendor.filtering_metadata.get("scoring_method") != "rule_based"
             ]
             
             metrics.relevant_count = len(relevant_matches)

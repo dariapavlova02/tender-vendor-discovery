@@ -1,0 +1,22 @@
+[
+  {
+    "company_name": "Example Grounds Services",
+    "website": "https://grounds.example",
+    "email": "contact@grounds.example",
+    "phone": null,
+    "location": "Ontario, Canada",
+    "industry": "Grounds maintenance",
+    "source": "illustrative_fixture",
+    "match_status": "needs_review",
+    "scoring_method": "authored_example",
+    "email_source": "authored_example",
+    "email_confidence": null,
+    "email_validation": "not_validated",
+    "capability_match_score": 75.0,
+    "rationale": "Illustrative score only. Example services include mowing and seasonal cleanup; insurance and service area need review.",
+    "references": [
+      "https://grounds.example/services"
+    ],
+    "enrichment_flags": []
+  }
+]

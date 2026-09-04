@@ -155,18 +155,8 @@ class SmartEmailGeneratorProvider(BaseEnrichmentProvider):
             return True
     
     def _generate_candidates(self, domain: str, company_name: Optional[str] = None) -> List[str]:
-        """Generate prioritized email candidates including company-specific prefix."""
-        candidates = []
-        
-        if company_name:
-            company_prefix = self._extract_company_prefix(company_name)
-            if company_prefix and company_prefix not in self.prefixes:
-                candidates.append(f"{company_prefix}@{domain}")
-        
-        for prefix in self.prefixes[:self.max_candidates]:
-            candidates.append(f"{prefix}@{domain}")
-        
-        return candidates[:self.max_candidates + 1]
+        """Respect the configured prefix priority and candidate budget."""
+        return [f"{prefix}@{domain}" for prefix in self.prefixes[:self.max_candidates]]
     
     @staticmethod
     def _extract_company_prefix(company_name: str) -> Optional[str]:
@@ -205,7 +195,7 @@ class SmartEmailGeneratorProvider(BaseEnrichmentProvider):
         for email in candidates:
             prefix = email.split('@')[0]
             
-            query = f'site:{domain} contact email'
+            query = f'site:{domain} "{email}"'
             
             try:
                 result = await self.serper_client.search_company_async(
@@ -225,6 +215,9 @@ class SmartEmailGeneratorProvider(BaseEnrichmentProvider):
                     snippet = item.get('snippet', '')
                     title = item.get('title', '')
                     text = f"{title} {snippet}".lower()
+                    # Company context alone cannot validate a guessed mailbox.
+                    if not re.search(r'(?<![\w.+-])' + re.escape(email.lower()) + r'(?![\w.-])', text):
+                        continue
                     
                     confidence = self._calculate_confidence(
                         text, email, company_clean, domain

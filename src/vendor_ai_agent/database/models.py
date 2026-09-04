@@ -21,6 +21,17 @@ class Base(DeclarativeBase):
     pass
 
 
+class IngestionChunk(Base):
+    """Completed CSV chunks, committed atomically with their vendor updates."""
+
+    __tablename__ = "ingestion_chunks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("source", "digest", name="uq_ingestion_chunk"),)
+
+
 class Vendor(Base):
     __tablename__ = "vendors"
 

@@ -5,14 +5,13 @@ from typing import Iterable, List, Sequence
 
 from ..contracts import VendorDiscoveryContract, VendorSource
 from ..models import TenderProfile, VendorRecord
-from ..sources import StaticDirectorySource
 
 
 class VendorDiscovery(VendorDiscoveryContract):
     """Aggregates vendor candidates from configured sources."""
 
     def __init__(self, sources: Sequence[VendorSource] | None = None) -> None:
-        self.sources: List[VendorSource] = list(sources or [StaticDirectorySource()])
+        self.sources: List[VendorSource] = list(sources) if sources is not None else []
 
     def discover(self, profile: TenderProfile) -> List[VendorRecord]:
         import logging
