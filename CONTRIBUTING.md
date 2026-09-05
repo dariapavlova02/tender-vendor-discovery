@@ -12,4 +12,4 @@ database fixtures for tests. Do not add API calls, real credentials or client do
 offline suite. Test expected behaviour independently of the current implementation.
 
 Use Alembic migrations for schema changes. Keep public documentation aligned with executable
-entry points and distinguish authored examples from observed results.
+entry points, configured source wiring and observed results.

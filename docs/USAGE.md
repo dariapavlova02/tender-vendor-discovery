@@ -11,18 +11,7 @@ poetry install --with dev
 
 The committed lockfile pins dependencies. PDF OCR additionally needs Tesseract and Poppler;
 Playwright-based scraping requires `poetry run playwright install chromium`.
-Neither is required for the local review example or offline tests.
-
-## Inspect the example
-
-```bash
-make demo
-```
-
-Open `outputs/demo/review.html` in a browser. Expand candidate records to inspect evidence;
-JSON, CSV and XLSX downloads are linked at the bottom.
-The example contains fictional data and never calls external providers. Its source is
-[`demo.py`](../src/vendor_ai_agent/demo.py).
+Neither is required for the offline unit tests.
 
 ## Configure live processing
 
@@ -73,6 +62,30 @@ For explicit SAM/CanadaBuys tender metadata, see:
 poetry run python scripts/run_full_pipeline.py --help
 ```
 
+## Analysis settings
+
+The default limit is 500 candidates before enrichment and scoring. In the dashboard,
+**Maximum vendors to analyze** changes that limit. The **Standard** preset enables lookup
+of missing websites; the CLI's default `RuntimeConfig` leaves website lookup disabled.
+
+For programmatic processing with website lookup enabled:
+
+```python
+from pathlib import Path
+from vendor_ai_agent.config import RuntimeConfig
+from vendor_ai_agent.pipeline import TenderVendorPipeline
+
+config = RuntimeConfig()
+config.enrichment.enable_website_search = True  # Requires SERPER_API_KEY
+pipeline = TenderVendorPipeline(config)
+result = pipeline.run([Path("tender.pdf")], disable_auto_ingestion=True)
+pipeline.save_outputs(result.final_matches, directory=Path("outputs/review"))
+```
+
+Configure keys through the environment. Provider keys do not automatically enable all
+optional adapters; see [source wiring and processing limits](ARCHITECTURE.md).
+`--no-auto-ingestion` does not disable website research or LLM assessment.
+
 ## Dashboard
 
 The original Streamlit dashboard provides intermediate profiles, candidate tables and
@@ -86,8 +99,7 @@ make dashboard
 ```
 
 The dashboard listens on loopback through the launch script. Its login requires a real
-OAuth application; the local review report is the credential-free entry point. Do not expose
-this local workflow as a public multi-user service without a separate security review.
+OAuth application. The CLI processes documents without dashboard authentication.
 
 ## Container
 

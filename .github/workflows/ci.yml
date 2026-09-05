@@ -13,4 +13,3 @@ jobs:
       - run: pip install poetry==2.1.4
       - run: poetry install --with dev --no-interaction
       - run: make check
-      - run: make demo

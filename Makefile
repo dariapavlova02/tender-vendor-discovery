@@ -1,7 +1,4 @@
-.PHONY: demo test check dashboard
-
-demo:
-	poetry run tender-vendor-discovery demo
+.PHONY: test check dashboard
 
 test:
 	poetry run pytest -q

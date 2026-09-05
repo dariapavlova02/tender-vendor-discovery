@@ -1,72 +1,115 @@
 # Architecture
 
-The application is a staged procurement-research pipeline. Source adapters isolate external
-services from shared tender and vendor records; the orchestrator carries those records
-through filtering, enrichment, scoring and export.
+The system performs supplier research in stages. A tender profile drives source selection
+and queries; shared vendor records carry registry data, enrichment results and assessment
+metadata into the dashboard and exports.
 
 ## Components
 
 | Stage | Entry point | Responsibility |
 | --- | --- | --- |
 | Ingestion | [`ingestion/router.py`](../src/vendor_ai_agent/ingestion/router.py) | Tender metadata and attachment routing |
-| Parsing | [`modules/document_parser.py`](../src/vendor_ai_agent/modules/document_parser.py) | File traversal, text, tables and optional OCR |
-| Requirements | [`modules/requirement_extractor.py`](../src/vendor_ai_agent/modules/requirement_extractor.py) | Structured profile and search context |
-| Discovery | [`sources/`](../src/vendor_ai_agent/sources/) | Registry, local database and web candidates |
+| Parsing | [`modules/document_parser.py`](../src/vendor_ai_agent/modules/document_parser.py) | Text sections, tables and optional OCR |
+| Requirements | [`modules/requirement_extractor.py`](../src/vendor_ai_agent/modules/requirement_extractor.py) | Structured tender profile |
+| Search context | [`modules/tender_profiler.py`](../src/vendor_ai_agent/modules/tender_profiler.py) | Sector, contract type, industry codes and search terms |
+| Discovery | [`modules/vendor_discovery.py`](../src/vendor_ai_agent/modules/vendor_discovery.py) | Query compatible registered sources |
 | Filtering | [`modules/vendor_filter.py`](../src/vendor_ai_agent/modules/vendor_filter.py) | Duplicate, geographic and eligibility rules |
-| Enrichment | [`enrichment_providers/`](../src/vendor_ai_agent/enrichment_providers/) | Websites, contacts and supporting metadata |
-| Matching | [`modules/capability_matching.py`](../src/vendor_ai_agent/modules/capability_matching.py) | LLM assessment or explicit heuristic fallback |
-| Export | [`modules/output_generator.py`](../src/vendor_ai_agent/modules/output_generator.py) | CSV, XLSX and JSON review records |
+| Enrichment | [`modules/enrichment.py`](../src/vendor_ai_agent/modules/enrichment.py) | Website and contact providers, batch execution |
+| Assessment | [`modules/capability_matching.py`](../src/vendor_ai_agent/modules/capability_matching.py) | LLM scoring and heuristic fallback |
+| Export | [`modules/output_generator.py`](../src/vendor_ai_agent/modules/output_generator.py) | CSV, XLSX and JSON records |
 
-[`contracts.py`](../src/vendor_ai_agent/contracts.py) defines the stage interfaces;
-[`models.py`](../src/vendor_ai_agent/models.py) defines the shared records.
-[`pipeline.py`](../src/vendor_ai_agent/pipeline.py) coordinates the stages.
+[`pipeline.py`](../src/vendor_ai_agent/pipeline.py) wires the stages together;
+[`models.py`](../src/vendor_ai_agent/models.py) defines their shared records.
 
-## Candidate lifecycle
+## Source wiring
 
-The pipeline filters discovered vendors, optionally retrieves additional candidates,
-and applies the same filters to the combined set. Synthetic directory vendors are
-available only through an explicit configuration flag and are disabled by default.
+The standard pipeline registers SAM entities and the Canadian database source, then checks
+their compatibility with the tender profile. SAM requires appropriate industry codes and
+API credentials. Canadian discovery queries imported supplier records rather than downloading
+a complete registry at run time.
 
-Enrichment captures website material and contact metadata. Matching can use an LLM
-provider or retain a heuristic ranking when assessment is unavailable. The score origin
-is recorded as `llm` or `rule_based`; heuristic results stay in `needs_review` regardless
-of their numeric score. If no assessed candidate meets the configured threshold, the
-final shortlist is empty while `all_matches` remains available for inspection.
+Optional primary discovery uses Apollo when enabled with a key, otherwise Serper when
+enabled with a key. Additional Serper/Apollo searches can run before enrichment to fill
+an undersized candidate pool. These are candidate-count checks, not relevance checks.
 
-LLM rationales currently contain free-text evidence. Their quotations are not automatically
-verified against page text. A score passing the threshold is not a certification of compliance.
+Serper discovery defaults to Places search. It can instead use organic web results.
+Queries are generated from the tender context and expanded geographically. The implementation
+also applies contract-type keyword rules and domain exclusions.
 
-## Execution and storage
+The automatically registered enrichment providers are:
 
-The synchronous entry point supports asynchronous enrichment and a queue-based streaming
-path for larger batches. Background dashboard jobs use a worker process and Parquet
-artifacts. Existing pickle metadata is intended only for locally generated, trusted jobs.
+- `HybridWebsiteEnricher`, when website lookup is enabled and a Serper key is available:
+  DuckDuckGo lookup with Serper fallback.
+- `AsyncWebsiteContentProvider`, when website scraping is enabled: retrieve text from
+  company pages, reuse cached content and optionally render pages with Playwright.
+- `ContactScrapingProvider`, when contact scraping is enabled and a Serper key is available:
+  extract contacts from websites, use search fallbacks, and optionally try email candidates
+  with provenance and validation metadata.
 
-Each upload request receives its own directory. Attachment downloads also use isolated
-paths, a 20 MiB size cap, a 20-second socket timeout and a 120-second deadline checked
-between reads. Failed downloads are logged and exposed on the fetcher; partial files are
-removed. HTTP(S) sources and redirects are supported. Candidate-cache keys include the complete
-tender profile and discovery/filter configuration; changing the requested batch does not
-change the key. A source refresh with identical settings still requires clearing its cache.
+Apollo manual enrichment is available through the dashboard. Other adapter classes in the
+repository are not automatically part of this provider list. The retained static directory
+fixture source is disabled by default and is not a production information source.
 
-SQLAlchemy stores vendor identities, industry codes, contacts and API cache entries.
-The Canada CSV loader records successful chunk digests transactionally to avoid recounting
-an identical chunk on a retry. It stops on a failed chunk instead of reporting a partial
-import as successful. See [Data](DATA.md) for the boundaries of replay protection.
+## What the 500-company limit means
+
+The default `filtering.max_candidates` is 500. The dashboard exposes this as **Maximum vendors
+to analyze**. The same value sets the discovery target and the enrichment relevance target,
+but filtering caps the pool before enrichment. A pool of 500 therefore cannot guarantee
+500 relevant outputs: every data gap or rejection reduces the attainable total.
+
+Before final assessment:
+
+1. Discovery aggregates source results and may attempt supplemental searches.
+2. Government-source candidates are capped at 70% of the configured analysis limit by
+   default. This truncation currently also applies when Serper is unavailable.
+3. Filtering merges duplicates, checks eligibility and ranks candidates. Geographic sorting
+   is enabled by default; it does not impose a strict local-only exclusion.
+4. The pool is capped and passed through the requested processing batch. The default
+   discovery batch size is also 500.
+
+There is no post-assessment discovery loop to replace rejected or unscorable candidates.
+The numerical settings are implementation limits, not measured capacity or output guarantees.
+
+## Assessment and result states
+
+The assessment uses a tender summary and captured website text. The current prompt includes
+only the first 2,500 characters of website content; tender sections are also shortened.
+Relevant evidence elsewhere on the site or later in a section may therefore be absent from
+the model input. Search and capture quality directly affect the information available to score.
+
+The default shortlist threshold is 40. A scored record at or above that threshold can receive
+`selected`; a heuristic fallback stays in `needs_review`. Candidates with missing website
+content are skipped for scoring. They should not be interpreted as assessed non-matches.
+
+`all_matches` contains scored records, not necessarily every discovered or enriched company.
+In the streaming path, only scored records are written to the match output and reconstructed
+as enriched results. This limits the visibility of candidates lost before assessment.
+LLM quotations in rationales are not automatically checked against page text.
+
+## Execution and persistence
+
+The standard async configuration uses streaming for batches of at least 50 candidates.
+The default streaming batch size is 50 with two concurrent consumers. Non-streaming enrichment
+has separate batch limits and quality gates that can stop processing early; the streaming
+path does not use those same gates.
+
+Dashboard workers run in a background process and write Parquet artifacts. Existing pickle
+metadata is intended for locally generated, trusted jobs. SQLAlchemy stores suppliers,
+industry codes, contacts and API-cache entries; Alembic manages schema changes.
+
+Candidate-cache keys include the full tender profile and discovery/filter settings. Changing
+the requested batch preserves the cache identity. A source refresh with unchanged settings
+requires clearing its cache. Website content uses a separate domain cache.
+
+Uploads and attachment downloads use isolated paths. Downloads have a 20 MiB size cap,
+a 20-second socket timeout and a 120-second deadline checked between reads. Failed downloads
+are logged and exposed on the fetcher; incomplete files are removed.
+
+Canada CSV imports record successful chunk digests in the same transaction as vendor updates.
+See [Data](DATA.md) for replay and reconciliation boundaries.
 
 ## Extension points
 
-Add a source through the `VendorSource` interface or an enrichment provider through
-`EnrichmentProvider`. Keep source identifiers and provenance on the resulting records,
-and cover provider behaviour with a fake client before enabling a real integration.
-The Python import namespace remains `vendor_ai_agent` for compatibility with existing adapters.
-
-## Local review path
-
-[`demo.py`](../src/vendor_ai_agent/demo.py) uses the shared document parser, section
-classifier, candidate filter and exporters. Markdown checklist bullets become explicit
-service requirements; a deterministic comparison counts matching service labels from a
-local snapshot. It does not invoke the live discovery, enrichment or LLM matching stages.
-[`demo_report.py`](../src/vendor_ai_agent/demo_report.py) renders escaped HTML with native
-disclosure controls and local downloads. Input fixtures and the HTML template ship inside
-the package, so the demo also works outside the repository checkout.
+Add sources through the `VendorSource` interface and enrichment providers through
+`EnrichmentProvider`. Preserve source identifiers and provenance on shared records.
+The Python import namespace remains `vendor_ai_agent` for existing integrations.

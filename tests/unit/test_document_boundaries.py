@@ -1,5 +1,4 @@
-"""Offline checks for the document-to-review workflow and attachment boundaries."""
-import json
+"""Offline checks for document parsing, source filtering and attachment boundaries."""
 from io import BytesIO
 from unittest.mock import Mock
 
@@ -7,64 +6,12 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from vendor_ai_agent.demo import DATA_DIR, build_demo, export_demo
-from vendor_ai_agent.demo_report import render_report
 from vendor_ai_agent.database.models import Base, Vendor
 from vendor_ai_agent.models import AttachmentMetadata
 from vendor_ai_agent.modules.document_fetcher import DocumentFetcher
 from vendor_ai_agent.modules.document_parser import DocumentParser
 from vendor_ai_agent.modules.document_processing import SectionExtractor
 from vendor_ai_agent.sources.canada_contracts import CanadaContractsSource
-
-
-def test_local_workflow_exposes_gaps_and_deduplicates(tmp_path):
-    report, matches = build_demo()
-    assert report['input_count'] == 5
-    assert report['duplicates_removed'] == 1
-    assert [row['covered'] for row in report['candidates']] == [3, 2, 1, 0]
-    assert report['candidates'][1]['missing'] == ['Hedge trimming']
-    assert all(row['follow_up'] == ['Certificate of liability insurance', 'Two recent references for comparable work']
-               for row in report['candidates'])
-    assert all(match.vendor.filtering_metadata['match_status'] == 'needs_review' for match in matches)
-    export_demo(tmp_path)
-    assert json.loads((tmp_path / 'review.json').read_text()) == report
-    assert (tmp_path / 'tender.md').read_text() == (DATA_DIR / 'tender.md').read_text()
-    assert '<table>' in (tmp_path / 'review.html').read_text()
-
-
-def test_demo_recomputes_from_changed_document_and_snapshot(tmp_path):
-    tender = tmp_path / 'tender.md'
-    tender.write_text('# Snow contract\n\n## Technical requirements\n- Snow removal\n\n## Mandatory requirements\n- Safety plan\n')
-    snapshot = tmp_path / 'vendors.json'
-    snapshot.write_text(json.dumps([{'company_name': 'Local contractor', 'services': ['Snow removal'],
-                                   'source_reference': 'local_snapshot:1'}]))
-    report, matches = build_demo(tender, snapshot)
-    assert report['title'] == 'Snow contract'
-    assert report['requirements'] == ['Snow removal']
-    assert report['candidates'][0]['covered'] == 1
-    assert matches[0].capability_match_score == 100
-    assert report['follow_up'] == ['Safety plan']
-    tender.write_text(tender.read_text().replace('- Snow removal', '- Snow removal\n- Gritting'))
-    report, matches = build_demo(tender, snapshot)
-    assert report['candidates'][0]['missing'] == ['Gritting']
-    assert matches[0].capability_match_score == 50
-
-
-def test_empty_requirement_list_is_not_a_perfect_match(tmp_path):
-    tender = tmp_path / 'empty.md'
-    tender.write_text('# Empty tender\nNo requirements provided')
-    with pytest.raises(ValueError, match='Technical requirements'):
-        build_demo(tender)
-
-
-def test_html_escapes_source_text():
-    report, _ = build_demo()
-    report['candidates'][0]['company_name'] = '<img src=x onerror=alert(1)>'
-    report['candidates'][0]['source_reference'] = 'javascript:alert(1)'
-    rendered = render_report(report)
-    assert '<img' not in rendered
-    assert '&lt;img' in rendered
-    assert 'href="javascript:' not in rendered
 
 
 def test_markdown_sections_preserve_fenced_content(tmp_path):

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from vendor_ai_agent import cli
 from vendor_ai_agent.config import RuntimeConfig
 from vendor_ai_agent.database.models import Base, IngestionChunk, Vendor
-from vendor_ai_agent.demo import export_demo
+from vendor_ai_agent.modules.output_generator import OutputGenerator
 from vendor_ai_agent.file_storage import save_uploads
 from vendor_ai_agent.ingestion.canada_contracts import CanadaContractsLoader
 from vendor_ai_agent.models import APIMetadata, SetAsideMetadata, TenderProfile, TenderSection, VendorMatchResult, VendorRecord
@@ -160,10 +160,18 @@ def test_uploads_cannot_overwrite_another_job(tmp_path):
 
 
 def test_export_retains_contact_provenance(tmp_path):
-    export_demo(tmp_path)
+    vendor = VendorRecord('Test Supplier', filtering_metadata={
+        'email_validation': 'not_validated',
+        'scoring_method': 'rule_based',
+        'match_status': 'needs_review',
+    })
+    matches = [VendorMatchResult(vendor, 20, 'Insufficient evidence')]
+    exporter = OutputGenerator()
+    exporter.to_json(matches, tmp_path / 'vendor_matches.json')
+    exporter.to_excel(matches, tmp_path / 'vendor_matches.xlsx')
     record = json.loads((tmp_path / 'vendor_matches.json').read_text())[0]
     assert record['email_validation'] == 'not_validated'
-    assert record['scoring_method'] == 'demo_service_coverage'
+    assert record['scoring_method'] == 'rule_based'
     assert record['match_status'] == 'needs_review'
     assert (tmp_path / 'vendor_matches.xlsx').exists()
 

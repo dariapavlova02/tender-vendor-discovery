@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-COMMANDS = {"run", "demo", "ingest-sam-csv", "ingest-cid-csv", "ingest-ccc-data", "ingest-canada-contracts"}
+COMMANDS = {"run", "ingest-sam-csv", "ingest-cid-csv", "ingest-ccc-data", "ingest-canada-contracts"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,11 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--output-dir", type=Path)
     run.add_argument("--base-name", default="tender_vendors")
     run.add_argument("--no-auto-ingestion", action="store_true")
-    demo = commands.add_parser("demo", help="Run the local document-to-review example without API calls")
-    demo.add_argument("--output-dir", type=Path, default=Path("outputs/demo"))
-    demo.add_argument("--tender-file", type=Path, help="Markdown tender with a Technical requirements checklist")
-    demo.add_argument("--vendors-file", type=Path, help="Local supplier snapshot JSON")
-    for name in sorted(COMMANDS - {"run", "demo"}):
+    for name in sorted(COMMANDS - {"run"}):
         command = commands.add_parser(name, help="Import a locally supplied source export")
         command.add_argument("file", type=Path)
     return parser
@@ -32,11 +28,6 @@ def main(argv: list[str] | None = None) -> None:
     if arguments and arguments[0] not in COMMANDS and not arguments[0].startswith("-"):
         arguments.insert(0, "run")
     args = build_parser().parse_args(arguments)
-    if args.command == "demo":
-        from .demo import export_demo
-        export_demo(args.output_dir, args.tender_file, args.vendors_file)
-        print(f"Local review generated: {args.output_dir / 'review.html'} (JSON, CSV and XLSX alongside).")
-        return
     if args.command == "run":
         from .pipeline import TenderVendorPipeline
         pipeline = TenderVendorPipeline()
