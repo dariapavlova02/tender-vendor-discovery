@@ -105,3 +105,8 @@ threshold is a ranking rule, not a probability or qualification guarantee.
 
 Client tender packages and production results are not included. [Data](docs/DATA.md)
 describes retained source metadata, and [Testing](docs/TESTING.md) records the verification scope.
+
+## License
+
+Project code and original documentation are available under the [MIT License](LICENSE).
+Third-party source data and metadata retain their own terms; see [Data](docs/DATA.md).

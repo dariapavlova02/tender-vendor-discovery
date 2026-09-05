@@ -3,6 +3,7 @@ name = "tender-vendor-discovery"
 version = "0.1.0"
 description = "Tender document processing, vendor discovery and evidence review"
 authors = ["Daria Pavlova"]
+license = "MIT"
 readme = "README.md"
 packages = [{include = "vendor_ai_agent", from = "src"}]
 

@@ -43,3 +43,11 @@ contract-level upsert/reconciliation model is outside this cleanup.
 
 Vendor totals remain source-derived aggregates. They are not proof of current capability,
 eligibility or the availability of a listed contact.
+
+## Licensing boundary
+
+The project's [MIT License](../LICENSE) covers its code and original documentation. It does
+not relicense third-party datasets, source metadata (including the ODBus metadata PDF),
+or content retrieved from company websites or external APIs. Those materials retain their
+own applicable terms. Source retrieval and usage terms that are not recorded above remain
+unverified; the project license does not supply the missing permissions.
