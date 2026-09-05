@@ -1,5 +1,9 @@
 # Tender Vendor Discovery
 
+[![CI](https://github.com/dariapavlova02/tender-vendor-discovery/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dariapavlova02/tender-vendor-discovery/actions/workflows/ci.yml)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB)](docs/TESTING.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0F766E)](LICENSE)
+
 Supplier research system developed and used in production for a commercial procurement
 workflow. It reads tender documents, builds a candidate pool from registries and web
 search, collects company information, and ranks suppliers against the tender requirements.
