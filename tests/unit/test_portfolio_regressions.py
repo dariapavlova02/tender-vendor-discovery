@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from vendor_ai_agent import cli
 from vendor_ai_agent.config import RuntimeConfig
 from vendor_ai_agent.database.models import Base, IngestionChunk, Vendor
-from vendor_ai_agent.demo import example_matches, export_demo
+from vendor_ai_agent.demo import export_demo
 from vendor_ai_agent.file_storage import save_uploads
 from vendor_ai_agent.ingestion.canada_contracts import CanadaContractsLoader
 from vendor_ai_agent.models import APIMetadata, SetAsideMetadata, TenderProfile, TenderSection, VendorMatchResult, VendorRecord
@@ -163,7 +163,7 @@ def test_export_retains_contact_provenance(tmp_path):
     export_demo(tmp_path)
     record = json.loads((tmp_path / 'vendor_matches.json').read_text())[0]
     assert record['email_validation'] == 'not_validated'
-    assert record['scoring_method'] == 'authored_example'
+    assert record['scoring_method'] == 'demo_service_coverage'
     assert record['match_status'] == 'needs_review'
     assert (tmp_path / 'vendor_matches.xlsx').exists()
 

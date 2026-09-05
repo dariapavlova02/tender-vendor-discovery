@@ -11,7 +11,7 @@ poetry install --with dev
 
 The committed lockfile pins dependencies. PDF OCR additionally needs Tesseract and Poppler;
 Playwright-based scraping requires `poetry run playwright install chromium`.
-Neither is required for the authored export example or offline tests.
+Neither is required for the local review example or offline tests.
 
 ## Inspect the example
 
@@ -19,7 +19,8 @@ Neither is required for the authored export example or offline tests.
 make demo
 ```
 
-Open `outputs/demo/vendor_matches.xlsx`, or inspect the JSON/CSV alongside it.
+Open `outputs/demo/review.html` in a browser. Expand candidate records to inspect evidence;
+JSON, CSV and XLSX downloads are linked at the bottom.
 The example contains fictional data and never calls external providers. Its source is
 [`demo.py`](../src/vendor_ai_agent/demo.py).
 
@@ -85,7 +86,7 @@ make dashboard
 ```
 
 The dashboard listens on loopback through the launch script. Its login requires a real
-OAuth application; the export demo is the credential-free entry point. Do not expose
+OAuth application; the local review report is the credential-free entry point. Do not expose
 this local workflow as a public multi-user service without a separate security review.
 
 ## Container

@@ -334,7 +334,7 @@ def check_authentication() -> None:
 
     if not st.session_state.authenticated:
         st.title("🔐 Authentication Required")
-        st.write("Please sign in with your Google account to access the Vendor AI Agent Dashboard.")
+        st.write("Please sign in with your Google account to access the Tender Vendor Discovery.")
 
         if st.button("Sign in with Google", type="primary"):
             flow = get_google_oauth_flow()

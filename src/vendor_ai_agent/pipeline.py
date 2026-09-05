@@ -1,4 +1,4 @@
-"""High-level orchestration for the Tender Vendor AI Agent."""
+"""High-level orchestration for the Tender Vendor Discovery."""
 from __future__ import annotations
 
 import asyncio

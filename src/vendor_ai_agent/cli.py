@@ -16,8 +16,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--output-dir", type=Path)
     run.add_argument("--base-name", default="tender_vendors")
     run.add_argument("--no-auto-ingestion", action="store_true")
-    demo = commands.add_parser("demo", help="Export fictional example records without API calls")
+    demo = commands.add_parser("demo", help="Run the local document-to-review example without API calls")
     demo.add_argument("--output-dir", type=Path, default=Path("outputs/demo"))
+    demo.add_argument("--tender-file", type=Path, help="Markdown tender with a Technical requirements checklist")
+    demo.add_argument("--vendors-file", type=Path, help="Local supplier snapshot JSON")
     for name in sorted(COMMANDS - {"run", "demo"}):
         command = commands.add_parser(name, help="Import a locally supplied source export")
         command.add_argument("file", type=Path)
@@ -32,8 +34,8 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(arguments)
     if args.command == "demo":
         from .demo import export_demo
-        export_demo(args.output_dir)
-        print(f"Illustrative example exported to {args.output_dir}; no external services called.")
+        export_demo(args.output_dir, args.tender_file, args.vendors_file)
+        print(f"Local review generated: {args.output_dir / 'review.html'} (JSON, CSV and XLSX alongside).")
         return
     if args.command == "run":
         from .pipeline import TenderVendorPipeline

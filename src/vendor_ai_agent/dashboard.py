@@ -88,7 +88,7 @@ st.set_page_config(
 
 check_authentication()
 
-st.title("Tender Vendor AI Dashboard")
+st.title("Tender Vendor Discovery")
 st.markdown("Run the discovery pipeline, review extracted data, and export vendor shortlists.")
 add_logout_button()
 

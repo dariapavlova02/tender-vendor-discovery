@@ -1,4 +1,4 @@
-"""Global configuration primitives for the Tender Vendor AI Agent."""
+"""Global configuration primitives for the Tender Vendor Discovery."""
 from __future__ import annotations
 
 import os

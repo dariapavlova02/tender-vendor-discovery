@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Tender Vendor AI pipeline with optional API ingestion."""
+"""Run the Tender Vendor Discovery pipeline with optional API ingestion."""
 from __future__ import annotations
 
 import argparse

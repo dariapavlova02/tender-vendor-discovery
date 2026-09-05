@@ -4,9 +4,12 @@
 
 | Material | Purpose | Status |
 | --- | --- | --- |
-| [`examples/demo/`](../examples/demo/) | Review/export illustration | Authored fictional company, reserved `.example` domains |
+| [`examples/demo/`](../examples/demo/) | Generated review examples | Authored fictional companies, reserved `.example` domains |
 | [`ODBus Metadata.pdf`](../data/canada_sources/ODBus_v1/ODBus%20Metadata.pdf) | Source-schema reference retained from the original project | Historical third-party metadata, not a vendor dataset |
 | [`field_mappings.json`](../data/canada_sources/_metadata/field_mappings.json) | Historical import field mapping notes | Paths, counts and ingestion status describe the original environment |
+
+The executable [demo inputs](../src/vendor_ai_agent/demo_data/) are bundled with the Python
+package. They contain a fictional tender and structured supplier snapshots, not scraped pages.
 
 The mapping counts and coverage statements have not been revalidated. Exact retrieval dates
 and usage terms are not fully recorded. Included third-party material is not presented as a

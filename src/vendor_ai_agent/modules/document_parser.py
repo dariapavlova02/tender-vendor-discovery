@@ -480,6 +480,30 @@ class DocumentParser(DocumentParserContract):
     def _parse_text(self, path: Path) -> List[TenderSection]:
         """Parse plain text files."""
         content = path.read_text(encoding="utf-8", errors="ignore")
+        if path.suffix.lower() == ".md":
+            sections = []
+            title, lines = path.stem, []
+            fence = None
+            for line in content.splitlines():
+                marker = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+                if marker:
+                    token = marker.group(1)
+                    if fence is None:
+                        fence = token
+                    elif token[0] == fence[0] and len(token) >= len(fence):
+                        fence = None
+                heading = None if fence or marker else re.match(r"^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+                if heading:
+                    if any(line.strip() for line in lines) or title != path.stem:
+                        sections.append(TenderSection(title, "\n".join(lines).strip(), path,
+                                                      metadata={"file_type": "markdown"}))
+                    title, lines = heading.group(1), []
+                else:
+                    lines.append(line)
+            if any(line.strip() for line in lines) or title != path.stem:
+                sections.append(TenderSection(title, "\n".join(lines).strip(), path,
+                                              metadata={"file_type": "markdown"}))
+            return sections
         return [
             TenderSection(
                 title=path.stem,

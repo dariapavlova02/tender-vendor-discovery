@@ -1,0 +1,42 @@
+[
+  {
+    "company_name": "Alder Grounds Cooperative",
+    "website": "https://alder.example",
+    "email": "enquiries@alder.example",
+    "location": "Ontario, Canada",
+    "services": ["Mowing", "Hedge trimming", "Seasonal cleanup"],
+    "source_reference": "https://alder.example/services"
+  },
+  {
+    "company_name": "Meadowline Maintenance",
+    "website": "https://meadowline.example",
+    "email": "office@meadowline.example",
+    "location": "Ontario, Canada",
+    "services": ["Mowing", "Seasonal cleanup"],
+    "source_reference": "https://meadowline.example/services"
+  },
+  {
+    "company_name": "Northfield Arborists",
+    "website": "https://northfield.example",
+    "email": null,
+    "location": "Ontario, Canada",
+    "services": ["Tree removal", "Hedge trimming"],
+    "source_reference": "https://northfield.example/services"
+  },
+  {
+    "company_name": "Cedar Office Supply",
+    "website": "https://cedar.example",
+    "email": "sales@cedar.example",
+    "location": "Ontario, Canada",
+    "services": ["Office furniture", "Stationery"],
+    "source_reference": "https://cedar.example/catalogue"
+  },
+  {
+    "company_name": "Alder Grounds Cooperative Inc.",
+    "website": "https://www.alder.example",
+    "email": "enquiries@alder.example",
+    "location": "Ontario, Canada",
+    "services": ["Mowing", "Hedge trimming", "Seasonal cleanup"],
+    "source_reference": "https://alder.example/services"
+  }
+]

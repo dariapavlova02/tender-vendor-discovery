@@ -8,10 +8,11 @@ poetry install --with dev
 make check
 ```
 
-Recorded local check: **112 tests passed** on Python 3.11 / macOS ARM64.
+Recorded local check: **131 tests passed** on Python 3.11 / macOS ARM64.
 
 `make check` runs pytest, source syntax and local Markdown-link validation, and package builds.
-The same sequence is configured in GitHub Actions. The test configuration disables dotenv,
+It then runs the built wheel outside the checkout with network access blocked and compares
+its JSON results with the committed examples. The same sequence runs in GitHub Actions. The test configuration disables dotenv,
 removes provider credentials, blocks Internet socket connections and isolates generated files.
 
 ## Scope
@@ -21,8 +22,14 @@ contact handling and scoring-response handling. Regression checks cover CLI disp
 late-candidate filtering, empty shortlists, heuristic review status, cache identity, export
 provenance, isolated uploads and repeat-import protection with SQLite.
 
-An authored demo record goes through the actual export implementation. It demonstrates the
-file contract and is not a measured supplier match or an end-to-end discovery result.
+The local demo exercises parsing, section classification, deduplication and export. Checks
+verify that changed input requirements change coverage and that missing evidence stays
+visible. Attachment regressions cover isolated names, size limits, timeouts, partial-file
+cleanup and unsupported URL schemes. Relevant Canadian suppliers are retained regardless
+of sector words in their names.
+
+The HTML report is also inspected locally at desktop and mobile sizes. This visual check
+is separate from the automated suite.
 
 ## Historical experiments
 

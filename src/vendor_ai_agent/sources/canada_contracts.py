@@ -13,13 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class CanadaContractsSource:
-    IRRELEVANT_BUSINESS_PATTERNS = [
-        r'\b(kitchen|restaurant|bar|eatery|cafe|food|catering|bistro|grill|pub)\b',
-        r'\b(towing|tow truck|auto repair|garage|body shop)\b',
-        r'\b(fitness|gym|wellness|spa)\b',
-        r'\b(real estate|property|realty|realtor)\b',
-    ]
-    
     def __init__(self, session: Session):
         self.session = session
         self.canada_sources = [
@@ -56,14 +49,6 @@ class CanadaContractsSource:
                     expanded.append(kw)
         
         return list(set(expanded))
-    
-    @staticmethod
-    def is_likely_irrelevant(vendor_name: str) -> bool:
-        name_lower = vendor_name.lower()
-        for pattern in CanadaContractsSource.IRRELEVANT_BUSINESS_PATTERNS:
-            if re.search(pattern, name_lower):
-                return True
-        return False
     
     def search_vendors(
         self,
@@ -144,12 +129,6 @@ class CanadaContractsSource:
         registry_vendors = list(result.scalars().all())
         
         vendors = proven_vendors + registry_vendors
-        
-        filtered_vendors = [v for v in vendors if not self.is_likely_irrelevant(v.legal_name)]
-        removed_count = len(vendors) - len(filtered_vendors)
-        if removed_count > 0:
-            logger.info(f"Filtered out {removed_count} likely irrelevant vendors (restaurants, bars, etc.)")
-        vendors = filtered_vendors
         
         if len(vendors) < 100:
             logger.info(f"Only {len(vendors)} vendors found. Attempting fallback searches.")

@@ -42,7 +42,10 @@ The synchronous entry point supports asynchronous enrichment and a queue-based s
 path for larger batches. Background dashboard jobs use a worker process and Parquet
 artifacts. Existing pickle metadata is intended only for locally generated, trusted jobs.
 
-Each upload request receives its own directory. Candidate-cache keys include the complete
+Each upload request receives its own directory. Attachment downloads also use isolated
+paths, a 20 MiB size cap, a 20-second socket timeout and a 120-second deadline checked
+between reads. Failed downloads are logged and exposed on the fetcher; partial files are
+removed. HTTP(S) sources and redirects are supported. Candidate-cache keys include the complete
 tender profile and discovery/filter configuration; changing the requested batch does not
 change the key. A source refresh with identical settings still requires clearing its cache.
 
@@ -57,3 +60,13 @@ Add a source through the `VendorSource` interface or an enrichment provider thro
 `EnrichmentProvider`. Keep source identifiers and provenance on the resulting records,
 and cover provider behaviour with a fake client before enabling a real integration.
 The Python import namespace remains `vendor_ai_agent` for compatibility with existing adapters.
+
+## Local review path
+
+[`demo.py`](../src/vendor_ai_agent/demo.py) uses the shared document parser, section
+classifier, candidate filter and exporters. Markdown checklist bullets become explicit
+service requirements; a deterministic comparison counts matching service labels from a
+local snapshot. It does not invoke the live discovery, enrichment or LLM matching stages.
+[`demo_report.py`](../src/vendor_ai_agent/demo_report.py) renders escaped HTML with native
+disclosure controls and local downloads. Input fixtures and the HTML template ship inside
+the package, so the demo also works outside the repository checkout.
